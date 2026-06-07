@@ -6,6 +6,26 @@ import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 
+class PersistenceCfg(BaseModel):
+    """Storage backend configuration."""
+
+    backend: Literal["sqlite", "supabase"] = "sqlite"
+    sqlite_path: str = "data/cryptochucker.db"
+
+
+class LlmCopilotCfg(BaseModel):
+    """Optional LLM signal-validator (off by default)."""
+
+    enabled: bool = False
+    provider: Literal["anthropic", "openai", "ollama"] = "anthropic"
+
+
+class PineCfg(BaseModel):
+    """Pine Script integration settings."""
+
+    scanner_symbols: list[str] = Field(default_factory=list)
+
+
 class DataCfg(BaseModel):
     primary_timeframe: str = "4h"
     confirm_timeframe: str = "1h"
@@ -141,6 +161,9 @@ class Config(BaseModel):
     watchlist: WatchlistCfg = Field(default_factory=WatchlistCfg)
     executor: ExecutorCfg = Field(default_factory=ExecutorCfg)
     fees: FeesCfg = Field(default_factory=FeesCfg)
+    persistence: PersistenceCfg = Field(default_factory=PersistenceCfg)
+    llm_copilot: LlmCopilotCfg = Field(default_factory=LlmCopilotCfg)
+    pine: PineCfg = Field(default_factory=PineCfg)
     # remaining sections kept permissive dicts for the sample; tighten per stage as used
     model_config = {"extra": "allow"}
 

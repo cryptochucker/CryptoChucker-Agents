@@ -3,7 +3,10 @@ pandas>=2.2
 numpy>=1.26,<2
 # NOTE: pandas_ta has no Python 3.11 wheel; TA (ATR/MFI/RSI/ADX) is implemented
 # directly in agents/signal_agent.py with equivalent pandas math. No pandas_ta dep.
-vectorbt>=0.26
+# NOTE: vectorbt>=0.26 cannot be installed on Windows/Python 3.11 due to the OS
+# long-path limitation (jupyterlab-manager static assets exceed MAX_PATH). The
+# backtester is implemented with a pure pandas/numpy engine in agents/backtester.py
+# that produces the same metrics and equity-curve Series as vectorbt would.
 streamlit>=1.40
 plotly>=5.24
 kaleido>=0.2

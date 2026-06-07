@@ -327,3 +327,75 @@ def test_fees_cfg_negative_fee_via_flat_dict_raises():
     """MEDIUM 5: negative fee through the flat-dict YAML path must also raise."""
     with pytest.raises((ValueError, ValidationError)):
         FeesCfg(**{"blofin": {"maker": -0.0001, "taker": 0.0006}})
+
+
+# ---- Stage 5: PersistenceCfg, LlmCopilotCfg, PineCfg ----
+
+from utils.config_schema import LlmCopilotCfg, PersistenceCfg, PineCfg  # noqa: E402
+
+
+def test_persistence_cfg_defaults():
+    p = PersistenceCfg()
+    assert p.backend == "sqlite"
+    assert p.sqlite_path == "data/cryptochucker.db"
+
+
+def test_persistence_cfg_invalid_backend_raises():
+    with pytest.raises((ValueError, ValidationError)):
+        PersistenceCfg(backend="redis")
+
+
+def test_persistence_cfg_supabase_accepted():
+    p = PersistenceCfg(backend="supabase")
+    assert p.backend == "supabase"
+
+
+def test_persistence_cfg_sqlite_path_custom():
+    p = PersistenceCfg(sqlite_path="/tmp/test.db")
+    assert p.sqlite_path == "/tmp/test.db"
+
+
+def test_llm_copilot_cfg_defaults():
+    lc = LlmCopilotCfg()
+    assert lc.enabled is False
+    assert lc.provider == "anthropic"
+
+
+def test_llm_copilot_cfg_invalid_provider_raises():
+    with pytest.raises((ValueError, ValidationError)):
+        LlmCopilotCfg(provider="gemini")
+
+
+def test_llm_copilot_cfg_openai_accepted():
+    lc = LlmCopilotCfg(enabled=True, provider="openai")
+    assert lc.provider == "openai"
+    assert lc.enabled is True
+
+
+def test_llm_copilot_cfg_ollama_accepted():
+    lc = LlmCopilotCfg(provider="ollama")
+    assert lc.provider == "ollama"
+
+
+def test_pine_cfg_defaults():
+    p = PineCfg()
+    assert p.scanner_symbols == []
+
+
+def test_pine_cfg_accepts_symbol_list():
+    p = PineCfg(scanner_symbols=["BTC/USDT", "ETH/USDT"])
+    assert "BTC/USDT" in p.scanner_symbols
+
+
+def test_config_has_persistence_llm_copilot_pine_fields(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text(yaml.safe_dump({
+        "exchange": "blofin",
+        "persistence": {"backend": "sqlite", "sqlite_path": "data/test.db"},
+        "llm_copilot": {"enabled": False, "provider": "anthropic"},
+        "pine": {"scanner_symbols": ["BTC/USDT"]},
+    }))
+    cfg = load_config(str(p))
+    assert cfg.persistence.backend == "sqlite"
+    assert cfg.llm_copilot.enabled is False
+    assert cfg.pine.scanner_symbols == ["BTC/USDT"]
