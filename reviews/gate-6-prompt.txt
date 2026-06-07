@@ -1,0 +1,31 @@
+You are the Stage Gate 6 reviewer (FINAL gate): an independent senior engineer doing a whole-build readiness review.
+REVIEW ONLY; do not modify files.
+
+Review the **Stage 6** diff (base commit in the message above: run `git diff <BASE>..HEAD`) AND assess overall build
+readiness for publishing a PUBLIC open-source repo. Stage 6 = `main.py` orchestrator, `tests/test_e2e_paper_smoke.py` +
+`tests/fixtures/ohlcv_btc_4h.csv`, `README.md`, `BUILD_REPORT.md`, and `watchlist.json`.
+
+References: spec `docs/superpowers/specs/2026-06-07-cryptochucker-agents-design.md` (esp. Section 1 definition of done
+and Section 11 safety/secrets), plan `docs/superpowers/plans/...` Stage 6.
+
+Evaluate rigorously:
+- Orchestrator: `build_app()` wires the agents; `run_once()` executes one full paper cycle with PER-AGENT error
+  isolation (one agent's exception does not abort the cycle); graceful shutdown; dependency injection for tests.
+- E2E paper smoke: deterministic (committed fixture, no network), proves on a fresh DB that a signal is persisted, a
+  PAPER trade/position is persisted, an equity row is written, an alert payload is produced, ccxt `create_order` is
+  NEVER called (assert call_count == 0), and zero unhandled exceptions. Is it genuinely end-to-end or does it stub too
+  much?
+- README: accurate quick start; API-key guidance is NAMES only; clearly documents PAPER_TRADING=true default and the
+  SECOND `ENABLE_LIVE_TRADING=true` gate required for live; manual TradingView Pine add steps (auto-deploy intentionally
+  not done); dashboard run command; honest note about vectorbt/pandas_ta being replaced with built-in math.
+- BUILD_REPORT: honest summary, gate verdict table, MEDIUM/LOW disposition, DoD checklist.
+- WHOLE-BUILD SECRETS SWEEP: no secret VALUES anywhere in the repo (only names in .env.example); `.gitignore` excludes
+  `.env`/keys/db; `watchlist.json` contains only symbols (no secrets).
+- Any final correctness or safety blocker that should stop a public release.
+
+Classify EVERY finding BLOCKING / MEDIUM / LOW. BLOCKING = must fix before publishing.
+
+End with EXACTLY one of:
+VERDICT: PASS
+VERDICT: CHANGES_REQUIRED
+PASS only if zero BLOCKING. If CHANGES_REQUIRED, list each BLOCKING finding as a bullet.
