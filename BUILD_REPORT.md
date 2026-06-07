@@ -3,7 +3,7 @@
 **Build date:** 2026-06-07
 **Branch:** `build`
 **Python:** 3.11 (Windows 11 Pro)
-**Test count:** 272 passed, 0 failed (ruff clean)
+**Test count:** 275 passed, 0 failed (ruff clean)
 **Reviewer/approver of record:** Codex CLI (`gpt-5.5`) at every stage gate
 
 ---
