@@ -18,7 +18,7 @@ import pandas as pd
 
 
 def _atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14) -> pd.Series:
-    """Average True Range computed with pandas ewm (Wilder's smoothing = span=length)."""
+    """Average True Range computed with Wilder smoothing (ewm alpha = 1/length)."""
     prev_close = close.shift(1)
     tr = pd.concat(
         [
@@ -47,8 +47,20 @@ def _mfi(
     neg_mf = raw_mf.where(direction < 0, 0.0)
     pos_sum = pos_mf.rolling(length).sum()
     neg_sum = neg_mf.rolling(length).sum().abs()
-    mfr = pos_sum / neg_sum.replace(0, np.nan)
-    return (100 - 100 / (1 + mfr)).fillna(50.0)
+    # Guard all three zero-denominator cases with np.where to stay vectorized:
+    #   pos > 0, neg == 0 -> MFI = 100
+    #   pos == 0, neg > 0 -> MFI = 0  (mfr = 0 -> 100 - 100/1 = 0, natural)
+    #   both == 0         -> MFI = 50 (neutral, no trend information)
+    safe_neg = neg_sum.where(neg_sum != 0, np.nan)
+    mfr = pos_sum / safe_neg  # NaN where neg_sum == 0
+    normal_mfi = 100.0 - 100.0 / (1.0 + mfr)
+    result = np.where(
+        neg_sum == 0,
+        np.where(pos_sum > 0, 100.0, 50.0),
+        normal_mfi,
+    )
+    # fillna(50) covers rolling-window warmup rows (insufficient data -> neutral)
+    return pd.Series(result, index=pos_sum.index).fillna(50.0)
 
 
 def _rsi(close: pd.Series, length: int = 14) -> pd.Series:
@@ -58,8 +70,20 @@ def _rsi(close: pd.Series, length: int = 14) -> pd.Series:
     loss = (-delta).where(delta < 0, 0.0)
     avg_gain = gain.ewm(alpha=1.0 / length, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1.0 / length, adjust=False).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    return (100 - 100 / (1 + rs)).fillna(50.0)
+    # Guard all three zero-denominator cases with np.where to stay vectorized:
+    #   gain > 0, loss == 0 -> RSI = 100
+    #   gain == 0, loss > 0 -> RSI = 0  (rs = 0 -> 100 - 100/1 = 0, natural)
+    #   both == 0           -> RSI = 50 (neutral, flat series)
+    safe_loss = avg_loss.where(avg_loss != 0, np.nan)
+    rs = avg_gain / safe_loss  # NaN where avg_loss == 0
+    normal_rsi = 100.0 - 100.0 / (1.0 + rs)
+    result = np.where(
+        avg_loss == 0,
+        np.where(avg_gain > 0, 100.0, 50.0),
+        normal_rsi,
+    )
+    # fillna(50) covers any residual NaN (e.g. from NaN input rows)
+    return pd.Series(result, index=avg_gain.index).fillna(50.0)
 
 
 def _adx(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14) -> pd.Series:

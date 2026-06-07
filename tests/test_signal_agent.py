@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from agents.signal_agent import confirm, get_money_line, latest_signal
+from agents.signal_agent import _mfi, _rsi, confirm, get_money_line, latest_signal
 
 
 def _df(prices, vol=None):
@@ -83,3 +83,88 @@ def test_latest_signal_with_adx_filter_true():
     out = get_money_line(_df(prices))
     sig = latest_signal(out, use_adx_filter=True)
     assert sig["state"] in ("BULLISH", "BEARISH")
+
+
+# ---- Gate 2 zero-denominator edge-case tests ----
+
+
+def _ohlcv_df(prices, volumes=None):
+    """Build a minimal OHLCV DataFrame from a price list."""
+    n = len(prices)
+    c = np.array(prices, float)
+    v = np.full(n, 1000.0) if volumes is None else np.array(volumes, float)
+    idx = pd.date_range("2026-01-01", periods=n, freq="1h")
+    return pd.DataFrame(
+        {"open": c, "high": c * 1.001, "low": c * 0.999, "close": c, "volume": v},
+        index=idx,
+    )
+
+
+def test_rsi_strictly_increasing_equals_100():
+    """Strictly increasing prices -> avg_loss == 0 -> RSI must be 100, no NaN/inf."""
+    prices = list(range(50, 100))  # 50 bars, always rising
+    close = pd.Series(prices, dtype=float)
+    result = _rsi(close, length=14)
+    last = result.iloc[-1]
+    assert np.isfinite(last), f"RSI is not finite: {last}"
+    assert last == pytest.approx(100.0, abs=1e-6), f"Expected 100, got {last}"
+
+
+def test_rsi_strictly_decreasing_equals_0():
+    """Strictly decreasing prices -> avg_gain == 0 -> RSI must be 0, no NaN/inf."""
+    prices = list(range(100, 50, -1))  # 50 bars, always falling
+    close = pd.Series(prices, dtype=float)
+    result = _rsi(close, length=14)
+    last = result.iloc[-1]
+    assert np.isfinite(last), f"RSI is not finite: {last}"
+    assert last == pytest.approx(0.0, abs=1e-6), f"Expected 0, got {last}"
+
+
+def test_rsi_flat_equals_50():
+    """Flat price series -> both avg_gain and avg_loss == 0 -> RSI must be 50, no NaN/inf."""
+    prices = [100.0] * 30
+    close = pd.Series(prices, dtype=float)
+    result = _rsi(close, length=14)
+    last = result.iloc[-1]
+    assert np.isfinite(last), f"RSI is not finite: {last}"
+    assert last == pytest.approx(50.0, abs=1e-6), f"Expected 50, got {last}"
+
+
+def test_mfi_strictly_increasing_equals_100():
+    """Strictly increasing prices -> neg_mf == 0 -> MFI must be 100, no NaN/inf."""
+    prices = list(range(50, 110))  # 60 bars, always rising
+    df = _ohlcv_df(prices)
+    result = _mfi(df["high"], df["low"], df["close"], df["volume"], length=14)
+    last = result.iloc[-1]
+    assert np.isfinite(last), f"MFI is not finite: {last}"
+    assert last == pytest.approx(100.0, abs=1e-6), f"Expected 100, got {last}"
+
+
+def test_mfi_strictly_decreasing_equals_0():
+    """Strictly decreasing prices -> pos_mf == 0 -> MFI must be 0, no NaN/inf."""
+    prices = list(range(110, 50, -1))  # 60 bars, always falling
+    df = _ohlcv_df(prices)
+    result = _mfi(df["high"], df["low"], df["close"], df["volume"], length=14)
+    last = result.iloc[-1]
+    assert np.isfinite(last), f"MFI is not finite: {last}"
+    assert last == pytest.approx(0.0, abs=1e-6), f"Expected 0, got {last}"
+
+
+def test_mfi_flat_equals_50():
+    """Flat prices -> both pos_mf and neg_mf == 0 -> MFI must be 50, no NaN/inf."""
+    prices = [100.0] * 30
+    df = _ohlcv_df(prices)
+    result = _mfi(df["high"], df["low"], df["close"], df["volume"], length=14)
+    last = result.iloc[-1]
+    assert np.isfinite(last), f"MFI is not finite: {last}"
+    assert last == pytest.approx(50.0, abs=1e-6), f"Expected 50, got {last}"
+
+
+def test_get_money_line_flat_signal_strength_no_nan():
+    """Flat price/volume -> signal_strength column must be in [0,100] with no NaN."""
+    prices = [100.0] * 50
+    df = _ohlcv_df(prices)
+    out = get_money_line(df)
+    ss = out["signal_strength"]
+    assert ss.notna().all(), "signal_strength contains NaN on flat series"
+    assert ss.between(0, 100).all(), f"signal_strength out of [0,100]: {ss.describe()}"
