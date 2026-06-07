@@ -1,5 +1,7 @@
-import pandas as pd
 from unittest.mock import MagicMock
+
+import pandas as pd
+
 from utils.data_fetcher import DataFetcher
 
 

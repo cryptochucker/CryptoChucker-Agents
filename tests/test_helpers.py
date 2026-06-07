@@ -1,4 +1,4 @@
-from utils.helpers import save_watchlist, load_watchlist
+from utils.helpers import load_watchlist, save_watchlist
 
 
 def test_roundtrip_json(tmp_path):

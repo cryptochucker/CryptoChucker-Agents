@@ -4,7 +4,6 @@ import json
 import sqlite3
 from typing import Any
 
-
 _DDL = """
 CREATE TABLE IF NOT EXISTS signals (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,

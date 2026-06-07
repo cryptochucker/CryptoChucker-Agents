@@ -1,5 +1,6 @@
 import pytest
-from utils.risk_manager import position_size, drawdown_breached
+
+from utils.risk_manager import drawdown_breached, position_size
 
 
 def test_position_size():

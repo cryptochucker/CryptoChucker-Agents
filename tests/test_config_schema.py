@@ -1,6 +1,7 @@
 import pytest
 import yaml
-from utils.config_schema import load_config, Config
+
+from utils.config_schema import Config, load_config
 
 
 def test_load_valid_config(tmp_path):

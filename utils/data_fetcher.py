@@ -6,7 +6,6 @@ from typing import Any
 import ccxt
 import pandas as pd
 
-
 _COLUMNS = ["open", "high", "low", "close", "volume"]
 _MAX_RETRIES = 3
 _BACKOFF_BASE = 1.0  # seconds
