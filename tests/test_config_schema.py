@@ -205,3 +205,92 @@ def test_watchlist_whitelist_accepts_string_list():
     """MEDIUM 7: A list of strings must be accepted without error."""
     w = WatchlistCfg(whitelist=["SOL/USDT"])
     assert w.whitelist == ["SOL/USDT"]
+
+
+# ---- Stage 4: ExecutorCfg and FeesCfg ----
+
+from utils.config_schema import ExecutorCfg, FeesCfg  # noqa: E402
+
+
+def test_executor_cfg_defaults():
+    """ExecutorCfg must have correct defaults."""
+    e = ExecutorCfg()
+    assert e.profit_target_pct == pytest.approx(0.06)
+    assert e.use_dip_filter is True
+    assert e.trailing_stop_pct == pytest.approx(0.03)
+    assert e.max_hold_hours == 48
+
+
+def test_executor_cfg_profit_target_zero_raises():
+    """profit_target_pct=0 must raise (gt=0 constraint)."""
+    with pytest.raises((ValueError, ValidationError)):
+        ExecutorCfg(profit_target_pct=0)
+
+
+def test_executor_cfg_profit_target_negative_raises():
+    """profit_target_pct < 0 must raise."""
+    with pytest.raises((ValueError, ValidationError)):
+        ExecutorCfg(profit_target_pct=-0.01)
+
+
+def test_executor_cfg_trailing_stop_negative_raises():
+    """trailing_stop_pct < 0 must raise (ge=0 constraint)."""
+    with pytest.raises((ValueError, ValidationError)):
+        ExecutorCfg(trailing_stop_pct=-0.01)
+
+
+def test_executor_cfg_trailing_stop_zero_allowed():
+    """trailing_stop_pct=0 means disabled; must be allowed (ge=0)."""
+    e = ExecutorCfg(trailing_stop_pct=0.0)
+    assert e.trailing_stop_pct == 0.0
+
+
+def test_executor_cfg_max_hold_hours_zero_raises():
+    """max_hold_hours=0 must raise (ge=1 constraint)."""
+    with pytest.raises((ValueError, ValidationError)):
+        ExecutorCfg(max_hold_hours=0)
+
+
+def test_executor_cfg_valid_custom_values():
+    """Custom valid values must be accepted."""
+    e = ExecutorCfg(profit_target_pct=0.10, use_dip_filter=False, trailing_stop_pct=0.05, max_hold_hours=24)
+    assert e.profit_target_pct == pytest.approx(0.10)
+    assert e.use_dip_filter is False
+    assert e.trailing_stop_pct == pytest.approx(0.05)
+    assert e.max_hold_hours == 24
+
+
+def test_fees_cfg_defaults():
+    """FeesCfg must accept an empty mapping (no exchanges configured)."""
+    f = FeesCfg()
+    assert isinstance(f.rates, dict)
+
+
+def test_fees_cfg_valid_entry():
+    """FeesCfg must accept a valid exchange -> {maker, taker} mapping."""
+    f = FeesCfg(rates={"blofin": {"maker": 0.0002, "taker": 0.0006}})
+    assert f.rates["blofin"]["maker"] == pytest.approx(0.0002)
+    assert f.rates["blofin"]["taker"] == pytest.approx(0.0006)
+
+
+def test_fees_cfg_multiple_exchanges():
+    """FeesCfg must accept multiple exchanges."""
+    f = FeesCfg(rates={
+        "blofin": {"maker": 0.0002, "taker": 0.0006},
+        "binance": {"maker": 0.0002, "taker": 0.0004},
+    })
+    assert "binance" in f.rates
+
+
+def test_config_has_executor_and_fees_fields(tmp_path):
+    """Config must expose executor and fees sub-models after load_config."""
+    p = tmp_path / "c.yaml"
+    p.write_text(yaml.safe_dump({
+        "exchange": "blofin",
+        "executor": {"profit_target_pct": 0.08, "use_dip_filter": False},
+        "fees": {"blofin": {"maker": 0.0002, "taker": 0.0006}},
+    }))
+    cfg = load_config(str(p))
+    assert cfg.executor.profit_target_pct == pytest.approx(0.08)
+    assert cfg.executor.use_dip_filter is False
+    assert cfg.fees.rates["blofin"]["taker"] == pytest.approx(0.0006)
