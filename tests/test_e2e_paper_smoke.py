@@ -683,3 +683,96 @@ def test_e2e_equity_snapshot_reflects_real_pnl(tmp_path):
         f"Equity {latest_equity} does not reflect account_balance ({account_balance}) "
         f"+ realized_pnl ({realized_pnl}). Expected ~{expected_minimum}"
     )
+
+
+# ---------------------------------------------------------------------------
+# BLOCKING: unrealized PnL for ALL open positions (quiet-cycle coverage)
+# ---------------------------------------------------------------------------
+
+
+def test_e2e_quiet_cycle_unrealized_pnl(tmp_path):
+    """BLOCKING: equity snapshot includes unrealized PnL for positions whose symbol
+    did NOT appear among this cycle's signal events.
+
+    Strategy:
+    - Directly insert an open position for a symbol (XRP/USDT) that the fixture
+      fetcher will never fire a signal event for (fixture only produces BTC events).
+    - Provide a fetcher that returns known OHLCV data for XRP/USDT so the
+      equity mark can be computed deterministically.
+    - Run run_once() -- the BTC events fire as normal, but XRP/USDT has NO signal
+      event and therefore appears in NO cycle event loop iteration.
+    - Assert the equity snapshot incorporates the XRP/USDT unrealized PnL rather
+      than silently ignoring it.
+    """
+    from main import build_app  # noqa: PLC0415
+
+    cfg = _make_paper_cfg(tmp_path)          # use_dip_filter=False -> BTC entry fires
+    store = Store(str(tmp_path / "quiet_cycle.db"))
+    store.init()
+    mock_alert = MagicMock()
+
+    account_balance = cfg.risk.account_balance
+
+    # Known values for the quiet-cycle position.
+    quiet_entry_price = 1.0000   # XRP/USDT entry price
+    quiet_mark_price  = 1.0500   # mark price the fetcher will return (5% gain)
+    quiet_qty         = 100.0    # 100 units
+
+    # Directly seed an open XRP/USDT position -- bypasses the executor so this
+    # position is NEVER associated with a signal event in this cycle.
+    store.save_position({
+        "symbol": "XRP/USDT",
+        "mode": "paper",
+        "side": "long",
+        "entry_price": quiet_entry_price,
+        "qty": quiet_qty,
+        "stop_price": 0.95,
+    })
+
+    expected_unrealized = (quiet_mark_price - quiet_entry_price) * quiet_qty
+    # = (1.05 - 1.00) * 100 = 5.0
+
+    # Build a fetcher that returns:
+    #   - the BTC fixture for BTC/USDT (so BTC events fire normally)
+    #   - a tiny synthetic df with the known mark price for XRP/USDT
+    btc_df = _load_fixture()
+
+    def mixed_fetcher(symbol: str, tf: str, limit: int) -> pd.DataFrame:  # noqa: ARG001
+        if "XRP" in symbol:
+            # Synthetic 5-bar df whose last close == quiet_mark_price.
+            closes = [0.98, 0.99, 1.00, 1.02, quiet_mark_price]
+            return pd.DataFrame(
+                {
+                    "open":   closes,
+                    "high":   [c + 0.01 for c in closes],
+                    "low":    [c - 0.01 for c in closes],
+                    "close":  closes,
+                    "volume": [1_000_000.0] * 5,
+                }
+            )
+        return btc_df
+
+    app = build_app(cfg, fetcher=mixed_fetcher, store=store, alert_agent=mock_alert)
+    app.run_once()
+
+    # Newest equity row (load_equity returns newest-first).
+    equity_rows = store.load_equity()
+    assert len(equity_rows) >= 1, "No equity rows written after run_once()"
+    latest_equity = equity_rows[0]["balance"]
+
+    # Realized PnL from trade rows.
+    all_trades = store.load_trades()
+    realized_pnl = sum(t["pnl"] for t in all_trades if t.get("pnl") is not None)
+
+    # The quiet-cycle XRP/USDT position must be reflected in the equity snapshot.
+    # Minimum check: equity > account_balance + realized_pnl (because unrealized > 0).
+    minimum_with_unrealized = account_balance + realized_pnl + expected_unrealized
+
+    assert latest_equity >= minimum_with_unrealized - 0.01, (
+        f"Equity snapshot ({latest_equity:.4f}) does not include the unrealized PnL "
+        f"({expected_unrealized:.4f}) for the quiet-cycle XRP/USDT position. "
+        f"Expected >= {minimum_with_unrealized:.4f} "
+        f"(account_balance={account_balance} + realized={realized_pnl:.4f} "
+        f"+ unrealized={expected_unrealized:.4f}). "
+        "run_once() is not fetching prices for positions with no signal event this cycle."
+    )

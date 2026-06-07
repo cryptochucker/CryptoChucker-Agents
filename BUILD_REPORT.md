@@ -72,10 +72,22 @@ stock-market annualization, network-on-render, fee/PnL inconsistency, orchestrat
 
 ## Dashboard Render Evidence (runtime, not just compile)
 
-- Real dashboard launched headless; rendered DOM has **no traceback** (`hasError: false`).
+- **Run command:** `streamlit run agents/dashboard.py` (or `.venv\Scripts\python.exe -m streamlit run agents/dashboard.py`)
+- **Local URL:** `http://localhost:8501` (Streamlit default)
+- **Serve status:** renders with no traceback (`hasError: false`); dark-themed layout with Overview/Scanner/Backtest tabs.
 - With a seeded store (pipeline run over the committed fixture: 48 signals, 2 paper trades, 2 open positions, 8 equity rows) the dashboard shows real KPIs, positions, alerts feed, and live logs.
 - Default render makes **zero network calls**; the Overview chart and ticker search fetch only on button click.
 - Ticker search verified present (`Search ticker` input + `Load chart` button).
+
+## Generated Artifact Paths
+
+| Artifact | Path | Notes |
+|---|---|---|
+| SQLite store | `data/cryptochucker.db` | Tables: `signals`, `scans`, `positions`, `trades`, `equity`. Created by `Store.init()`. |
+| Store path in config | `persistence.sqlite_path` in `config.yaml` | Overridable; default `data/cryptochucker.db`. |
+| Backtester equity CSV | caller-supplied `path` arg to `BacktestResult.to_csv(path)` | Writes `<path>` (equity curve) and `<path>.trades.csv` (trade log). No hardcoded default path; caller chooses filename. |
+| Dashboard backtest CSV | In-memory download button in the Backtest tab | File name: `equity_<SYMBOL>_<TF>.csv`; served as bytes via `st.download_button`, not written to disk. |
+| Backtest metrics | Returned in `BacktestResult` fields: `sharpe`, `sortino`, `max_drawdown`, `win_rate`, `profit_factor`; displayed in the dashboard Backtest tab and available via `print(result)`. |
 
 ## Secret Scan Evidence (DoD item)
 
@@ -114,8 +126,12 @@ python -m venv .venv
 docker compose up                                 # containerized
 ```
 
-Live trading is OFF by default. It is BUILT but UNTESTED; enabling it requires setting BOTH `PAPER_TRADING=false` and
-`ENABLE_LIVE_TRADING=true` in your `.env`, at your own risk, after validating paper mode (see README).
+**This release operates in PAPER mode only.** Live order execution is SCAFFOLDED (the `PAPER_TRADING`/`ENABLE_LIVE_TRADING`
+double gate, the authenticated-client factory in `utils/safety.py`, and the guarded `_live_order()` path) but is
+INTENTIONALLY NOT wired into the signal-execution path. `Executor.on_signal()` always uses the paper-fill route in this
+release. The env gates currently govern credential/client construction and the `_live_order` guard, not order placement
+from signals. Wiring and validating live execution is a clearly-scoped follow-on (requires `PAPER_TRADING=false` AND
+`ENABLE_LIVE_TRADING=true` -- both exact strings -- to be set in `.env` when that wiring is added).
 
 ---
 

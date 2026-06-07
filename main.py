@@ -206,6 +206,12 @@ class _App:
         # 4. Equity snapshot (always, even if no events).
         # Compute CURRENT equity = account_balance + realized_pnl + unrealized_pnl
         # so the dashboard reflects real PnL rather than the bare config constant.
+        #
+        # IMPORTANT: unrealized PnL must cover ALL open positions, not just those
+        # whose symbol produced a signal this cycle (latest_dfs only contains
+        # symbols that fired events).  For every open position whose symbol is NOT
+        # already in latest_dfs we fetch a fresh OHLCV bar now so quiet-cycle
+        # positions are still marked to market.
         try:
             account_balance = cfg.risk.account_balance
 
@@ -215,20 +221,34 @@ class _App:
                 t["pnl"] for t in self._store.load_trades() if t.get("pnl") is not None
             )
 
-            # Unrealized PnL: for each open position use the latest close from this
-            # cycle's fetched df when available; otherwise contribute 0.
+            # Unrealized PnL: for each open position, mark to the latest close.
+            # Prefer prices already fetched this cycle (latest_dfs); for symbols not
+            # in latest_dfs, fetch now so quiet cycles still reflect all open exposure.
             unrealized_pnl = 0.0
             open_positions = self._store.load_positions(status="open")
             for pos in open_positions:
                 sym = pos.get("symbol")
                 entry_price = pos.get("entry_price") or 0.0
                 qty = pos.get("qty") or 0.0
-                if sym and sym in latest_dfs:
+                if not sym:
+                    continue
+                # Use already-fetched df when available; otherwise fetch a fresh one.
+                if sym not in latest_dfs:
                     try:
-                        last_close = float(latest_dfs[sym]["close"].iloc[-1])
-                        unrealized_pnl += (last_close - entry_price) * qty
-                    except Exception:  # noqa: BLE001
-                        pass  # no price available; contribute 0
+                        fetched_df = self._fetcher(sym, tf, limit)
+                        latest_dfs[sym] = fetched_df
+                    except Exception as fetch_exc:  # noqa: BLE001
+                        logger.warning(
+                            "run_once: equity mark fetch failed for %s (contributing 0): %s",
+                            sym,
+                            fetch_exc,
+                        )
+                        # contribute 0 for this position; do not abort
+                try:
+                    last_close = float(latest_dfs[sym]["close"].iloc[-1])
+                    unrealized_pnl += (last_close - entry_price) * qty
+                except Exception:  # noqa: BLE001
+                    pass  # no price available; contribute 0
 
             cycle_equity = account_balance + realized_pnl + unrealized_pnl
             self._store.save_equity(cycle_equity)

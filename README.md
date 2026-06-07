@@ -8,14 +8,13 @@ to Telegram/Discord/email. An optional LLM co-pilot can validate signals before
 execution. A Streamlit dashboard provides live monitoring, and a built-in backtester
 lets you grid-search parameters.
 
-Live trading is built but **fail-closed** behind a double gate: you must explicitly
-set both `PAPER_TRADING=false` AND `ENABLE_LIVE_TRADING=true` in `.env` to unlock it.
-
-> **WARNING: Live order execution is BUILT but UNTESTED in this release.** It ships
-> disabled by default and requires both env gates to be set explicitly. The system
-> defaults to paper mode when either gate is absent or set to any value other than the
-> exact enabling strings. Enable live trading only after you have validated paper mode
-> end-to-end for your exchange and symbol set. You do so entirely at your own risk.
+> **This release operates in PAPER mode only.** Live order execution is SCAFFOLDED (the
+> `PAPER_TRADING`/`ENABLE_LIVE_TRADING` double gate, the authenticated-client factory in
+> `utils/safety.py`, and the guarded `_live_order()` path exist) but is INTENTIONALLY NOT
+> wired into the signal-execution path. `Executor.on_signal()` always takes the paper-fill
+> route in this release, regardless of how the env gates are set. Wiring and validating live
+> execution is a clearly-scoped follow-on. The env gates currently govern credential/client
+> construction and the `_live_order` guard, not order placement from signals.
 
 ---
 
