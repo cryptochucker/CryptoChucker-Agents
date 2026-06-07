@@ -1,0 +1,17 @@
+ccxt>=4.4
+pandas>=2.2
+numpy>=1.26
+pandas_ta>=0.3.14b
+vectorbt>=0.26
+streamlit>=1.40
+plotly>=5.24
+kaleido>=0.2
+python-telegram-bot>=21
+APScheduler>=3.10
+pydantic>=2.9
+pyyaml>=6.0
+loguru>=0.7
+python-dotenv>=1.0
+requests>=2.32
+anthropic>=0.40
+openai>=1.50

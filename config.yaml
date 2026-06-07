@@ -1,0 +1,51 @@
+exchange: blofin            # blofin|bitget|binance|bybit|kraken|coinbase
+paper_trading: true
+data:
+  primary_timeframe: 4h
+  confirm_timeframe: 1h
+  ohlcv_limit: 300
+watchlist:
+  source: file             # file|top_volume
+  file: watchlist.json
+  top_volume_n: 50
+  blacklist: []
+  whitelist: []
+scanner:
+  interval_minutes: 5
+  min_strength: 55
+  rank_top_n: 10
+  volume_surge_mult: 2.0
+signal:
+  money_line_length: 8
+  smooth: 14
+  slope_len: 3
+  use_rsi_filter: false
+  use_adx_filter: false
+risk:
+  account_balance: 10000
+  risk_pct: 0.01
+  max_exposure_pct: 0.15
+  max_trades_per_day: 10
+  max_consecutive_losses: 4
+  max_drawdown_pct: 0.20
+executor:
+  profit_target_pct: 0.06
+  use_dip_filter: true
+  trailing_stop_pct: 0.03
+  max_hold_hours: 48
+fees:
+  blofin: {maker: 0.0002, taker: 0.0006}
+  binance: {maker: 0.0002, taker: 0.0004}
+alerts:
+  telegram: true
+  discord: false
+  email: false
+  send_chart_image: true
+persistence:
+  backend: sqlite          # sqlite|supabase
+  sqlite_path: data/cryptochucker.db
+llm_copilot:
+  enabled: false
+  provider: anthropic      # anthropic|openai|ollama
+pine:
+  scanner_symbols: []      # up to 30; user fills in
