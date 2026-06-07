@@ -55,8 +55,8 @@ class WatchlistCfg(BaseModel):
     source: Literal["file", "top_volume"] = "file"
     file: str = "watchlist.json"
     top_volume_n: int = Field(50, ge=1)
-    blacklist: list = Field(default_factory=list)
-    whitelist: list = Field(default_factory=list)
+    blacklist: list[str] = Field(default_factory=list)
+    whitelist: list[str] = Field(default_factory=list)
 
 
 class Config(BaseModel):

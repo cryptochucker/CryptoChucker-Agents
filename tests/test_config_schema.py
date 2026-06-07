@@ -178,3 +178,30 @@ def test_config_has_scanner_alerts_watchlist_fields(tmp_path):
     assert cfg.alerts.discord is True
     assert cfg.alerts.telegram is False
     assert cfg.watchlist.blacklist == ["SHIB/USDT"]
+
+
+# ---- Gate 3: MEDIUM 7 — typed list[str] for blacklist/whitelist ----
+
+
+def test_watchlist_blacklist_rejects_non_string_entry():
+    """MEDIUM 7: Non-string entries in blacklist must raise a validation error."""
+    with pytest.raises((ValueError, ValidationError)):
+        WatchlistCfg(blacklist=[123])
+
+
+def test_watchlist_whitelist_rejects_non_string_entry():
+    """MEDIUM 7: Non-string entries in whitelist must raise a validation error."""
+    with pytest.raises((ValueError, ValidationError)):
+        WatchlistCfg(whitelist=[{"bad": "value"}])
+
+
+def test_watchlist_blacklist_accepts_string_list():
+    """MEDIUM 7: A list of strings must be accepted without error."""
+    w = WatchlistCfg(blacklist=["BTC/USDT", "ETH/USDT"])
+    assert w.blacklist == ["BTC/USDT", "ETH/USDT"]
+
+
+def test_watchlist_whitelist_accepts_string_list():
+    """MEDIUM 7: A list of strings must be accepted without error."""
+    w = WatchlistCfg(whitelist=["SOL/USDT"])
+    assert w.whitelist == ["SOL/USDT"]

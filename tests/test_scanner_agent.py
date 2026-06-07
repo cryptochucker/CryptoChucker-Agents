@@ -1,4 +1,4 @@
-"""Tests for agents/scanner_agent.py - Stage 3 Task 3.1."""
+"""Tests for agents/scanner_agent.py - Stage 3 Task 3.1 + Gate 3 findings."""
 from __future__ import annotations
 
 import numpy as np
@@ -94,6 +94,59 @@ def _fake_fetcher(symbol_df_map: dict):
             raise KeyError(f"Fake fetcher has no data for {symbol!r}")
         return symbol_df_map[symbol]
     return fetch
+
+
+# ---------------------------------------------------------------------------
+# Deterministic monkeypatched helpers (MEDIUM 6)
+#
+# We control get_money_line and latest_signal returns so tests are not
+# sensitive to exact signal-math implementation details.
+# ---------------------------------------------------------------------------
+
+def _make_minimal_df():
+    """Minimal OHLCV DataFrame with enough rows for the volume-surge filter."""
+    n = 25
+    c = np.ones(n) * 100.0
+    idx = pd.date_range("2026-01-01", periods=n, freq="4h")
+    vol = np.full(n, 1000.0)
+    vol[-1] = 9999.0  # big surge so volume filter passes with surge_mult=2
+    return pd.DataFrame(
+        {"open": c, "high": c, "low": c, "close": c, "volume": vol},
+        index=idx,
+    )
+
+
+def _passthrough_signal_fn(df):
+    """Signal function that just returns the raw df (latest_signal is monkeypatched)."""
+    return df
+
+
+def _make_controlled_scanner(monkeypatch, sig_map: dict, cfg: Config):
+    """Build a Scanner where latest_signal returns values from sig_map by symbol.
+
+    sig_map: {symbol: {"state": str, "strength": float, "flip": bool, "price": float}}
+    """
+
+    def controlled_latest_signal(out, **kwargs):
+        # Retrieve symbol stored as an attribute on the df (set during fetch)
+        sym = getattr(out, "_sym", None)
+        if sym and sym in sig_map:
+            return sig_map[sym]
+        return {"state": "BEARISH", "strength": 0.0, "flip": False, "price": 100.0}
+
+    def fetcher(symbol, tf, limit=300):
+        df2 = _make_minimal_df()
+        df2._sym = symbol  # type: ignore[attr-defined]
+        return df2
+
+    def signal_fn(df2):
+        df2._sym = getattr(df2, "_sym", None)  # preserve attribute through copy
+        return df2
+
+    monkeypatch.setattr("agents.scanner_agent.latest_signal", controlled_latest_signal)
+
+    scanner = Scanner(cfg, fetcher, signal_fn=signal_fn)
+    return scanner
 
 
 # ---------------------------------------------------------------------------
@@ -249,3 +302,183 @@ def test_scan_empty_watchlist(cfg):
     scanner = Scanner(cfg, fetcher)
     events = scanner.scan([])
     assert events == []
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM 6 — Deterministic scanner tests with controlled signal values
+# ---------------------------------------------------------------------------
+
+
+def test_deterministic_ranking_by_strength(monkeypatch):
+    """Ranking must be strictly by strength desc when flip=True for all symbols."""
+    cfg = Config(
+        scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=0.1),
+    )
+    sig_map = {
+        "AAA/USDT": {"state": "BULLISH", "strength": 80.0, "flip": True, "price": 1.0},
+        "BBB/USDT": {"state": "BEARISH", "strength": 60.0, "flip": True, "price": 2.0},
+        "CCC/USDT": {"state": "BULLISH", "strength": 70.0, "flip": True, "price": 3.0},
+    }
+    scanner = _make_controlled_scanner(monkeypatch, sig_map, cfg)
+    events = scanner.scan(["AAA/USDT", "BBB/USDT", "CCC/USDT"])
+    assert len(events) == 3
+    assert [e.symbol for e in events] == ["AAA/USDT", "CCC/USDT", "BBB/USDT"], (
+        f"Expected AAA > CCC > BBB by strength, got {[e.symbol for e in events]}"
+    )
+    assert [e.strength for e in events] == [80.0, 70.0, 60.0]
+
+
+def test_deterministic_min_strength_excludes_weak(monkeypatch):
+    """Symbols below min_strength must be excluded even when flip=True."""
+    cfg = Config(
+        scanner=ScannerCfg(min_strength=65.0, rank_top_n=10, volume_surge_mult=0.1),
+    )
+    sig_map = {
+        "STRONG/USDT": {"state": "BULLISH", "strength": 80.0, "flip": True, "price": 1.0},
+        "WEAK/USDT":   {"state": "BULLISH", "strength": 40.0, "flip": True, "price": 2.0},
+    }
+    scanner = _make_controlled_scanner(monkeypatch, sig_map, cfg)
+    events = scanner.scan(["STRONG/USDT", "WEAK/USDT"])
+    symbols = [e.symbol for e in events]
+    assert "STRONG/USDT" in symbols, "STRONG should pass min_strength=65"
+    assert "WEAK/USDT" not in symbols, "WEAK (strength=40) must be excluded by min_strength=65"
+
+
+def test_deterministic_non_flip_excluded(monkeypatch):
+    """Symbols where flip=False must never appear in results."""
+    cfg = Config(
+        scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=0.1),
+    )
+    sig_map = {
+        "FLIP/USDT":   {"state": "BULLISH", "strength": 75.0, "flip": True,  "price": 1.0},
+        "NOFLIP/USDT": {"state": "BULLISH", "strength": 90.0, "flip": False, "price": 2.0},
+    }
+    scanner = _make_controlled_scanner(monkeypatch, sig_map, cfg)
+    events = scanner.scan(["FLIP/USDT", "NOFLIP/USDT"])
+    symbols = [e.symbol for e in events]
+    assert "FLIP/USDT" in symbols, "FLIP (flip=True) should appear in results"
+    assert "NOFLIP/USDT" not in symbols, "NOFLIP (flip=False) must be excluded"
+
+
+def test_deterministic_blacklist_excludes(monkeypatch):
+    """Blacklisted symbols must not appear even when flip=True and strength is high."""
+    cfg = Config(
+        scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=0.1),
+        watchlist=WatchlistCfg(blacklist=["BL/USDT"]),
+    )
+    sig_map = {
+        "GOOD/USDT": {"state": "BULLISH", "strength": 80.0, "flip": True, "price": 1.0},
+        "BL/USDT":   {"state": "BULLISH", "strength": 99.0, "flip": True, "price": 2.0},
+    }
+    scanner = _make_controlled_scanner(monkeypatch, sig_map, cfg)
+    events = scanner.scan(["GOOD/USDT", "BL/USDT"])
+    symbols = [e.symbol for e in events]
+    assert "GOOD/USDT" in symbols
+    assert "BL/USDT" not in symbols, "Blacklisted BL/USDT must never appear"
+
+
+# ---------------------------------------------------------------------------
+# BLOCKING 3 — Per-symbol isolation: bad symbol does not abort scan
+# ---------------------------------------------------------------------------
+
+
+def test_isolation_bad_fetcher_does_not_abort_good_symbols(monkeypatch):
+    """A fetcher that raises for one symbol must not stop events from other symbols."""
+    cfg = Config(
+        scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=0.1),
+    )
+
+    def controlled_latest_signal(out, **kwargs):
+        sym = getattr(out, "_sym", None)
+        if sym == "GOOD/USDT":
+            return {"state": "BULLISH", "strength": 80.0, "flip": True, "price": 1.0}
+        return {"state": "BEARISH", "strength": 0.0, "flip": False, "price": 0.0}
+
+    def fetcher(symbol, tf, limit=300):
+        if symbol == "ERR/USDT":
+            raise RuntimeError("simulated transport error")
+        df = _make_minimal_df()
+        df._sym = symbol  # type: ignore[attr-defined]
+        return df
+
+    def signal_fn(df):
+        df._sym = getattr(df, "_sym", None)
+        return df
+
+    monkeypatch.setattr("agents.scanner_agent.latest_signal", controlled_latest_signal)
+    scanner = Scanner(cfg, fetcher, signal_fn=signal_fn)
+    events = scanner.scan(["ERR/USDT", "GOOD/USDT"])
+
+    symbols = [e.symbol for e in events]
+    assert "ERR/USDT" not in symbols, "Error symbol must be skipped"
+    assert "GOOD/USDT" in symbols, "Good symbol must still produce an event"
+
+
+def test_isolation_malformed_df_does_not_abort_good_symbols(monkeypatch):
+    """A fetcher that returns a very short DataFrame must not abort the scan."""
+    cfg = Config(
+        scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=0.1),
+    )
+
+    def controlled_latest_signal(out, **kwargs):
+        sym = getattr(out, "_sym", None)
+        if sym == "GOOD/USDT":
+            return {"state": "BULLISH", "strength": 75.0, "flip": True, "price": 1.0}
+        # For the short df, this raises KeyError simulating malformed data
+        raise KeyError("missing column")
+
+    def fetcher(symbol, tf, limit=300):
+        if symbol == "SHORT/USDT":
+            # Two-row DataFrame: volume filter will pass (len < 2 check skips it),
+            # but controlled_latest_signal raises for this symbol
+            idx = pd.date_range("2026-01-01", periods=2, freq="4h")
+            df = pd.DataFrame(
+                {"open": [1.0, 2.0], "high": [1.1, 2.1], "low": [0.9, 1.9],
+                 "close": [1.0, 2.0], "volume": [1000.0, 1000.0]},
+                index=idx,
+            )
+            df._sym = symbol  # type: ignore[attr-defined]
+            return df
+        df = _make_minimal_df()
+        df._sym = symbol  # type: ignore[attr-defined]
+        return df
+
+    def signal_fn(df):
+        df._sym = getattr(df, "_sym", None)
+        return df
+
+    monkeypatch.setattr("agents.scanner_agent.latest_signal", controlled_latest_signal)
+    scanner = Scanner(cfg, fetcher, signal_fn=signal_fn)
+    events = scanner.scan(["SHORT/USDT", "GOOD/USDT"])
+
+    symbols = [e.symbol for e in events]
+    assert "SHORT/USDT" not in symbols, "Malformed symbol must be skipped"
+    assert "GOOD/USDT" in symbols, "Good symbol must still produce an event"
+
+
+# ---------------------------------------------------------------------------
+# BLOCKING 2 — Flip-only contract test
+# ---------------------------------------------------------------------------
+
+
+def test_only_fresh_flips_emitted(monkeypatch):
+    """Symbols that did NOT flip on the latest bar must be excluded."""
+    cfg = Config(
+        scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=0.1),
+    )
+    sig_map = {
+        "FLIP1/USDT": {"state": "BULLISH", "strength": 70.0, "flip": True,  "price": 1.0},
+        "FLIP2/USDT": {"state": "BEARISH", "strength": 65.0, "flip": True,  "price": 2.0},
+        "NFLIP/USDT": {"state": "BULLISH", "strength": 99.0, "flip": False, "price": 3.0},
+    }
+    scanner = _make_controlled_scanner(monkeypatch, sig_map, cfg)
+    events = scanner.scan(["FLIP1/USDT", "FLIP2/USDT", "NFLIP/USDT"])
+    symbols = [e.symbol for e in events]
+    assert "FLIP1/USDT" in symbols
+    assert "FLIP2/USDT" in symbols
+    assert "NFLIP/USDT" not in symbols, (
+        "Non-flipping symbol (flip=False) must never appear in results"
+    )
+    # All returned events must have flip=True
+    for e in events:
+        assert e.flip is True, f"{e.symbol} has flip=False in result"

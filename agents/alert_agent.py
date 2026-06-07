@@ -20,13 +20,17 @@ Security
 --------
 Transport functions accept env as a parameter so tests can inject a fake env
 without touching ``os.environ``.  Secret values are NEVER logged or printed;
-only the env var NAMES appear in log messages.
+only the env var NAMES appear in log messages.  Exception messages are
+sanitised via ``_safe_err`` before being logged so that tokens/webhook URLs
+embedded by ``requests`` in error strings cannot leak.
 """
 from __future__ import annotations
 
 import logging
 import os
 import smtplib
+from email.mime.image import MIMEImage
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
 
@@ -36,6 +40,24 @@ from agents.scanner_agent import SignalEvent
 from utils.config_schema import Config
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Secret-redaction helpers (BLOCKING 1)
+# ---------------------------------------------------------------------------
+
+
+def _redact(text: str, *secrets: str) -> str:
+    """Replace every non-empty secret value in *text* with ``***``."""
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "***")
+    return text
+
+
+def _safe_err(exc: Exception, *secrets: str) -> str:
+    """Return a sanitised error string that cannot leak *secrets*."""
+    return f"{type(exc).__name__}: {_redact(str(exc), *secrets)}"
 
 
 # ---------------------------------------------------------------------------
@@ -134,13 +156,19 @@ def _post_telegram(msg: str, cfg: Config, image_bytes: Optional[bytes] = None) -
             ).raise_for_status()
             return
         except Exception as exc:
-            logger.warning("Telegram sendPhoto failed, falling back to text: %s", exc)
+            logger.warning(
+                "Telegram sendPhoto failed, falling back to text: %s",
+                _safe_err(exc, token),
+            )
 
-    requests.post(
-        f"{base_url}/sendMessage",
-        json={"chat_id": chat_id, "text": msg},
-        timeout=10,
-    ).raise_for_status()
+    try:
+        requests.post(
+            f"{base_url}/sendMessage",
+            json={"chat_id": chat_id, "text": msg},
+            timeout=10,
+        ).raise_for_status()
+    except Exception as exc:
+        raise type(exc)(_safe_err(exc, token)) from None
 
 
 def _post_discord(msg: str, cfg: Config, image_bytes: Optional[bytes] = None) -> None:
@@ -163,9 +191,15 @@ def _post_discord(msg: str, cfg: Config, image_bytes: Optional[bytes] = None) ->
             ).raise_for_status()
             return
         except Exception as exc:
-            logger.warning("Discord file upload failed, falling back to text: %s", exc)
+            logger.warning(
+                "Discord file upload failed, falling back to text: %s",
+                _safe_err(exc, webhook_url),
+            )
 
-    requests.post(webhook_url, json={"content": msg}, timeout=10).raise_for_status()
+    try:
+        requests.post(webhook_url, json={"content": msg}, timeout=10).raise_for_status()
+    except Exception as exc:
+        raise type(exc)(_safe_err(exc, webhook_url)) from None
 
 
 def _send_email(msg: str, cfg: Config, image_bytes: Optional[bytes] = None) -> None:
@@ -173,6 +207,10 @@ def _send_email(msg: str, cfg: Config, image_bytes: Optional[bytes] = None) -> N
 
     Reads ``SMTP_HOST``, ``SMTP_PORT``, ``SMTP_USER``, ``SMTP_PASSWORD``, and
     ``ALERT_EMAIL_TO`` from ``os.environ`` by NAME.
+
+    When *image_bytes* is provided the PNG is attached as a MIME image part.
+    Otherwise the chart link (already embedded in *msg* by ``send()``) serves
+    as the fallback; for email we also repeat it explicitly in the body.
     """
     host = os.environ.get("SMTP_HOST", "")
     port_str = os.environ.get("SMTP_PORT", "587")
@@ -188,16 +226,30 @@ def _send_email(msg: str, cfg: Config, image_bytes: Optional[bytes] = None) -> N
         port = 587
 
     password = os.environ.get("SMTP_PASSWORD", "")
-    mime = MIMEText(msg, "plain")
-    mime["Subject"] = "CryptoChucker Alert"
-    mime["From"] = user
-    mime["To"] = to_addr
+
+    if image_bytes:
+        # Multipart message: text body + PNG attachment
+        outer = MIMEMultipart()
+        outer["Subject"] = "CryptoChucker Alert"
+        outer["From"] = user
+        outer["To"] = to_addr
+        outer.attach(MIMEText(msg, "plain"))
+        img_part = MIMEImage(image_bytes, _subtype="png")
+        img_part.add_header("Content-Disposition", "attachment", filename="chart.png")
+        outer.attach(img_part)
+        mime_str = outer.as_string()
+    else:
+        mime = MIMEText(msg, "plain")
+        mime["Subject"] = "CryptoChucker Alert"
+        mime["From"] = user
+        mime["To"] = to_addr
+        mime_str = mime.as_string()
 
     with smtplib.SMTP(host, port) as server:
         server.starttls()
         if password:
             server.login(user, password)
-        server.sendmail(user, [to_addr], mime.as_string())
+        server.sendmail(user, [to_addr], mime_str)
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +310,8 @@ class AlertAgent:
         """
         alerts_cfg = self._cfg.alerts
         image_bytes: Optional[bytes] = None
-        link: Optional[str] = None
+        # Always include the chart link in the message body as a minimum.
+        link: str = chart_link(event.symbol)
 
         if alerts_cfg.send_chart_image:
             try:
@@ -266,8 +319,7 @@ class AlertAgent:
             except Exception:
                 image_bytes = None
 
-            if image_bytes is None:
-                link = chart_link(event.symbol)
+            # If we have bytes the image carries visual context; link still shown.
 
         msg = _format_message(event, link=link)
 

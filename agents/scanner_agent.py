@@ -65,13 +65,19 @@ class Scanner:
     def scan(self, symbols: list[str]) -> list[SignalEvent]:
         """Scan *symbols* and return filtered, ranked SignalEvents.
 
-        Processing per symbol:
+        Processing per symbol (BLOCKING 2: fresh-flip gate; BLOCKING 3: per-symbol isolation):
         1. Apply blacklist / whitelist.
-        2. Fetch OHLCV (skip on error).
+        2. Fetch OHLCV.
         3. Compute Money Line.
         4. Apply volume-surge filter (last bar volume > surge_mult * rolling avg).
-        5. Apply min_strength filter.
-        6. Collect the event regardless of flip direction (bullish or bearish).
+        5. Apply fresh-flip gate: skip the symbol if ``latest_signal(out)["flip"]``
+           is not True.  The scanner contract is to surface RECENT direction
+           changes; symbols in a sustained trend are excluded here.
+        6. Apply min_strength filter.
+        7. Collect the event.
+
+        Steps 2-7 are wrapped in a single try/except so that one malformed or
+        problematic symbol cannot abort the entire scan.
 
         Returns events sorted by strength descending, capped at rank_top_n.
         """
@@ -91,50 +97,54 @@ class Scanner:
             if whitelist and sym not in whitelist:
                 continue
 
-            # ---- Fetch OHLCV -----------------------------------------------
+            # ---- Per-symbol isolation (BLOCKING 3) -------------------------
+            # Any exception from fetch, signal computation, or filtering logs
+            # a warning and moves on to the next symbol.
             try:
+                # ---- Fetch OHLCV -------------------------------------------
                 df = self._fetcher(sym, tf, limit)
-            except Exception as exc:
-                logger.warning("Scanner: skipping %s - fetch error: %s", sym, exc)
-                continue
 
-            # ---- Money Line computation -------------------------------------
-            try:
+                # ---- Money Line computation ---------------------------------
                 out = self._signal_fn(df)
-            except Exception as exc:
-                logger.warning("Scanner: skipping %s - signal error: %s", sym, exc)
-                continue
 
-            # ---- Volume-surge filter ----------------------------------------
-            # Last bar volume must exceed surge_mult * rolling-20 mean.
-            # We compute the mean on the window *excluding* the last bar so that
-            # a single high-volume bar cannot inflate its own baseline.
-            vol = out["volume"]
-            if len(vol) >= 2:
-                rolling_avg = vol.iloc[:-1].rolling(min(20, len(vol) - 1)).mean().iloc[-1]
-                if pd.isna(rolling_avg) or rolling_avg <= 0:
-                    # Fall back to simple mean of all bars if rolling window is too short
-                    rolling_avg = vol.mean()
-                last_vol = vol.iloc[-1]
-                if last_vol < scanner_cfg.volume_surge_mult * rolling_avg:
+                # ---- Volume-surge filter ------------------------------------
+                # Last bar volume must exceed surge_mult * rolling-20 mean.
+                # We compute the mean on the window *excluding* the last bar so
+                # that a single high-volume bar cannot inflate its own baseline.
+                vol = out["volume"]
+                if len(vol) >= 2:
+                    rolling_avg = vol.iloc[:-1].rolling(min(20, len(vol) - 1)).mean().iloc[-1]
+                    if pd.isna(rolling_avg) or rolling_avg <= 0:
+                        # Fall back to simple mean of all bars if window too short
+                        rolling_avg = vol.mean()
+                    last_vol = vol.iloc[-1]
+                    if last_vol < scanner_cfg.volume_surge_mult * rolling_avg:
+                        continue
+
+                # ---- Fresh-flip gate (BLOCKING 2) ---------------------------
+                sig = latest_signal(out)
+                if not sig["flip"]:
                     continue
 
-            # ---- Signal summary + min_strength filter -----------------------
-            sig = latest_signal(out)
-            if sig["strength"] < scanner_cfg.min_strength:
-                continue
+                # ---- min_strength filter ------------------------------------
+                if sig["strength"] < scanner_cfg.min_strength:
+                    continue
 
-            events.append(
-                SignalEvent(
-                    symbol=sym,
-                    tf=tf,
-                    state=sig["state"],
-                    strength=sig["strength"],
-                    flip=sig["flip"],
-                    price=sig["price"],
-                    ts=out.index[-1] if isinstance(out.index, pd.DatetimeIndex) else pd.Timestamp.utcnow(),
+                events.append(
+                    SignalEvent(
+                        symbol=sym,
+                        tf=tf,
+                        state=sig["state"],
+                        strength=sig["strength"],
+                        flip=sig["flip"],
+                        price=sig["price"],
+                        ts=out.index[-1] if isinstance(out.index, pd.DatetimeIndex) else pd.Timestamp.utcnow(),
+                    )
                 )
-            )
+
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Scanner: skipping %s - error: %s", sym, exc)
+                continue
 
         # ---- Rank by strength descending, cap at top-N ---------------------
         events.sort(key=lambda e: e.strength, reverse=True)
