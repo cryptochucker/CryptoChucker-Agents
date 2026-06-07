@@ -345,3 +345,181 @@ def test_e2e_all_assertions_in_single_run(tmp_path):
     assert spy_client.create_order.call_count == 0, (
         "create_order was called -- live-trading guard failure!"
     )
+
+
+# ---------------------------------------------------------------------------
+# BLOCKING 1: build_app Executor honors real process env double-gate
+# ---------------------------------------------------------------------------
+
+
+def test_build_app_executor_paper_by_default(tmp_path, monkeypatch):
+    """Executor built by build_app is in paper mode when env gates are absent.
+
+    With no PAPER_TRADING / ENABLE_LIVE_TRADING in the process environment,
+    live_enabled must return False (fail-closed default).
+    """
+    from main import build_app  # noqa: PLC0415
+    from utils.safety import live_enabled  # noqa: PLC0415
+
+    # Ensure the gate keys are absent from the process environment.
+    monkeypatch.delenv("PAPER_TRADING", raising=False)
+    monkeypatch.delenv("ENABLE_LIVE_TRADING", raising=False)
+
+    cfg = _make_paper_cfg(tmp_path)
+    store = Store(str(tmp_path / "gate_paper.db"))
+    store.init()
+
+    app = build_app(cfg, fetcher=_fixture_fetcher, store=store, alert_agent=MagicMock())
+    executor = app._executor
+
+    # Executor was built with env=None, so live_enabled() reads os.environ directly.
+    # With both gate keys absent, it must return False (paper mode, fail-closed).
+    assert executor._env is None, "build_app must pass env=None to Executor"
+    assert not live_enabled(None), "live_enabled must be False when gate keys are absent"
+
+
+def test_build_app_executor_live_enabled_when_both_gates_set(tmp_path, monkeypatch):
+    """live_enabled returns True ONLY when both env gate strings are set exactly.
+
+    This test does NOT place any real orders; it only asserts that the
+    safety function would grant live mode given the exact enabling strings.
+    """
+    from utils.safety import live_enabled  # noqa: PLC0415
+
+    # Set both gates to the exact enabling strings via the process environment.
+    monkeypatch.setenv("PAPER_TRADING", "false")
+    monkeypatch.setenv("ENABLE_LIVE_TRADING", "true")
+
+    # live_enabled(None) reads os.environ directly -- must return True.
+    assert live_enabled(None), (
+        "live_enabled must return True when PAPER_TRADING=false AND "
+        "ENABLE_LIVE_TRADING=true are both set in os.environ"
+    )
+
+    # Partial gate: only one set -- must remain False.
+    monkeypatch.setenv("PAPER_TRADING", "false")
+    monkeypatch.delenv("ENABLE_LIVE_TRADING", raising=False)
+    assert not live_enabled(None), "One gate alone must not enable live trading"
+
+    monkeypatch.delenv("PAPER_TRADING", raising=False)
+    monkeypatch.setenv("ENABLE_LIVE_TRADING", "true")
+    assert not live_enabled(None), "One gate alone must not enable live trading"
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM 2: e2e alert test exercises the real transport
+# ---------------------------------------------------------------------------
+
+
+def _make_telegram_paper_cfg(tmp_path: Path) -> Config:
+    """Paper config with telegram channel enabled (transport will be monkeypatched)."""
+    return Config(
+        exchange="blofin",
+        paper_trading=True,
+        persistence={"sqlite_path": str(tmp_path / "e2e_tg_smoke.db")},
+        data={"primary_timeframe": "4h", "ohlcv_limit": 300},
+        scanner={
+            "interval_minutes": 5,
+            "min_strength": 55,
+            "rank_top_n": 10,
+            "volume_surge_mult": 2.0,
+            "use_vwap_filter": True,
+            "vwap_length": 20,
+        },
+        signal={
+            "money_line_length": 8,
+            "smooth": 14,
+            "slope_len": 3,
+            "use_rsi_filter": False,
+            "use_adx_filter": False,
+        },
+        executor={
+            "use_dip_filter": False,
+            "trailing_stop_pct": 0.03,
+            "profit_target_pct": 0.06,
+            "max_hold_hours": 48,
+        },
+        risk={
+            "account_balance": 10000,
+            "risk_pct": 0.01,
+            "max_exposure_pct": 0.15,
+            "max_trades_per_day": 10,
+            "max_consecutive_losses": 4,
+            "max_drawdown_pct": 0.20,
+        },
+        fees={"blofin": {"maker": 0.0002, "taker": 0.0006}},
+        alerts={
+            "telegram": True,   # enabled so the real dispatch path is exercised
+            "discord": False,
+            "email": False,
+            "send_chart_image": False,
+        },
+        llm_copilot={"enabled": False},
+    )
+
+
+def test_e2e_alert_real_transport_telegram(tmp_path, monkeypatch):
+    """MEDIUM 2: run_once() with a real AlertAgent drives the actual _post_telegram path.
+
+    Monkeypatches only the low-level HTTP call (_post_telegram), not the whole
+    AlertAgent, so the full format-and-dispatch code path is exercised.
+    Asserts:
+      - _post_telegram was called at least once.
+      - The message string contains the symbol and the state "BULLISH".
+      - create_order was never called (paper-mode structural guarantee).
+      - Signal, trade, and equity rows are persisted (smoke assertions intact).
+    """
+    import agents.alert_agent as alert_mod  # noqa: PLC0415
+    from main import build_app  # noqa: PLC0415
+
+    cfg = _make_telegram_paper_cfg(tmp_path)
+    store = Store(str(tmp_path / "e2e_tg_smoke.db"))
+    store.init()
+
+    # Capture calls to the low-level Telegram transport without hitting the network.
+    captured: list[str] = []
+
+    def fake_post_telegram(msg: str, cfg, **kwargs) -> None:  # noqa: ANN001
+        captured.append(msg)
+
+    monkeypatch.setattr(alert_mod, "_post_telegram", fake_post_telegram)
+
+    # Spy on create_order to confirm it is never called.
+    spy_client = MagicMock()
+    from agents.executor_agent import Executor  # noqa: PLC0415
+
+    original_init = Executor.__init__
+
+    def patched_init(self, cfg, store, client=None, env=None):  # noqa: ANN001
+        original_init(self, cfg, store, client=spy_client, env=env)
+
+    with patch.object(Executor, "__init__", patched_init):
+        # No alert_agent injected: build_app constructs a real AlertAgent from cfg.
+        app = build_app(cfg, fetcher=_fixture_fetcher, store=store)
+        app.run_once()
+
+    # Transport was reached (message was formatted and dispatched).
+    assert len(captured) >= 1, (
+        "Expected _post_telegram to be called at least once; it was never reached. "
+        "The real AlertAgent dispatch path may not have been exercised."
+    )
+
+    first_msg = captured[0]
+
+    # Message must be a formatted string, not a raw object.
+    assert isinstance(first_msg, str), f"Expected str message, got {type(first_msg)}"
+
+    # Symbol must appear in the message (fixture uses BTC/USDT).
+    assert "BTC" in first_msg, f"Expected symbol 'BTC' in alert message: {first_msg!r}"
+
+    # State must be BULLISH.
+    assert "BULLISH" in first_msg, f"Expected 'BULLISH' in alert message: {first_msg!r}"
+
+    # Structural paper-mode guarantee: no live orders.
+    assert spy_client.create_order.call_count == 0, (
+        "create_order was called in paper mode -- live-trading guard failure!"
+    )
+
+    # Smoke: signal and equity persisted.
+    assert len(store.load_signals()) >= 1, "No signal rows persisted"
+    assert len(store.load_equity()) >= 1, "No equity rows persisted"

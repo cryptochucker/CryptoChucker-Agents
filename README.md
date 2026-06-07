@@ -11,6 +11,12 @@ lets you grid-search parameters.
 Live trading is built but **fail-closed** behind a double gate: you must explicitly
 set both `PAPER_TRADING=false` AND `ENABLE_LIVE_TRADING=true` in `.env` to unlock it.
 
+> **WARNING: Live order execution is BUILT but UNTESTED in this release.** It ships
+> disabled by default and requires both env gates to be set explicitly. The system
+> defaults to paper mode when either gate is absent or set to any value other than the
+> exact enabling strings. Enable live trading only after you have validated paper mode
+> end-to-end for your exchange and symbol set. You do so entirely at your own risk.
+
 ---
 
 ## Quick Start
@@ -194,8 +200,14 @@ Dashboard at `http://localhost:8501` shows:
 - Backtest tab with parameter grid search
 - Live logs panel
 
-Screenshot placeholder:
-<!-- TODO: add dashboard screenshot here after first live run -->
+The dashboard is a dark-themed, mobile-friendly Streamlit app that reads live state
+directly from the SQLite store. The **Overview** tab shows a mode pill (PAPER/LIVE),
+current KPIs (total return, Sharpe ratio, win rate, open positions), a scrolling
+signals feed, and a real-time equity curve chart. The **Scanner** tab lists recent
+signals with strength bars and allows manual re-scans. The **Backtest** tab exposes
+the parameter grid-search UI: load a CSV or pull live OHLCV data, configure the
+grid, and view ranked results sorted by Sharpe ratio. Run it with
+`streamlit run agents/dashboard.py` (or `docker compose up dashboard`).
 
 ---
 

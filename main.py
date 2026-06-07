@@ -233,14 +233,15 @@ def build_app(
 
     scanner = Scanner(cfg, fetcher)
 
-    # Executor (paper mode; double-gate blocks live)
+    # Executor: pass env=None so it reads the real process environment via the
+    # existing safety functions (live_enabled / make_exchange_client / guard_live).
+    # Those functions default PAPER_TRADING -> "true" and ENABLE_LIVE_TRADING -> "false"
+    # when the keys are absent, so the system is paper-by-default without any
+    # hard-coding here.  Live mode requires BOTH env vars to be set to their exact
+    # enabling strings in the process environment at run time.
     from agents.executor_agent import Executor  # noqa: PLC0415
 
-    executor = Executor(
-        cfg,
-        store,
-        env={"PAPER_TRADING": "true", "ENABLE_LIVE_TRADING": "false"},
-    )
+    executor = Executor(cfg, store, env=None)
 
     # AlertAgent
     if alert_agent is None:
