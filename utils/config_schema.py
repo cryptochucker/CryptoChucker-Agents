@@ -19,11 +19,22 @@ class RiskCfg(BaseModel):
     max_drawdown_pct: float = Field(0.20, gt=0, le=1)
 
 
+class SignalCfg(BaseModel):
+    """Parameters for the Money Line signal engine."""
+
+    money_line_length: int = 8
+    smooth: int = 14
+    slope_len: int = 3
+    use_rsi_filter: bool = False
+    use_adx_filter: bool = False
+
+
 class Config(BaseModel):
     exchange: str = "blofin"
     paper_trading: bool = True
     data: DataCfg = DataCfg()
     risk: RiskCfg = RiskCfg()
+    signal: SignalCfg = SignalCfg()
     # remaining sections kept permissive dicts for the sample; tighten per stage as used
     model_config = {"extra": "allow"}
 

@@ -1,6 +1,6 @@
 ccxt>=4.4
 pandas>=2.2
-numpy>=1.26
+numpy>=1.26,<2
 pandas_ta>=0.3.14b
 vectorbt>=0.26
 streamlit>=1.40
