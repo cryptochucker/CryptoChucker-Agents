@@ -245,11 +245,15 @@ def _send_email(msg: str, cfg: Config, image_bytes: Optional[bytes] = None) -> N
         mime["To"] = to_addr
         mime_str = mime.as_string()
 
-    with smtplib.SMTP(host, port) as server:
-        server.starttls()
-        if password:
-            server.login(user, password)
-        server.sendmail(user, [to_addr], mime_str)
+    try:
+        with smtplib.SMTP(host, port) as server:
+            server.starttls()
+            if password:
+                server.login(user, password)
+            server.sendmail(user, [to_addr], mime_str)
+    except Exception as exc:
+        sanitised = _redact(str(exc), password, user, host)
+        raise type(exc)(sanitised) from None
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +317,7 @@ class AlertAgent:
         # Always include the chart link in the message body as a minimum.
         link: str = chart_link(event.symbol)
 
-        if alerts_cfg.send_chart_image:
+        if alerts_cfg.send_chart_image and df is not None:
             try:
                 image_bytes = build_chart_image(df)
             except Exception:

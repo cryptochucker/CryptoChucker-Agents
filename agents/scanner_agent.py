@@ -118,7 +118,7 @@ class Scanner:
                         # Fall back to simple mean of all bars if window too short
                         rolling_avg = vol.mean()
                     last_vol = vol.iloc[-1]
-                    if last_vol < scanner_cfg.volume_surge_mult * rolling_avg:
+                    if last_vol <= scanner_cfg.volume_surge_mult * rolling_avg:
                         continue
 
                 # ---- Fresh-flip gate (BLOCKING 2) ---------------------------

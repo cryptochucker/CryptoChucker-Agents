@@ -268,6 +268,53 @@ def test_scan_volume_surge_filter():
     )
 
 
+def test_scan_volume_surge_equality_boundary(monkeypatch):
+    """A symbol whose last_vol EQUALS the surge threshold must be FILTERED (strict >).
+
+    With all volumes equal to 1000.0 and volume_surge_mult=1.0, the rolling avg
+    is also 1000.0, so last_vol == surge_mult * rolling_avg exactly.  The strict
+    greater-than rule requires last_vol > threshold, so equality must be rejected.
+    """
+    cfg = Config(
+        scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=1.0),
+    )
+    sig_map = {
+        "EQ/USDT": {"state": "BULLISH", "strength": 80.0, "flip": True, "price": 1.0},
+    }
+
+    def fetcher(symbol, tf, limit=300):
+        # All volumes identical: last_vol == rolling_avg * surge_mult exactly
+        n = 25
+        c = np.ones(n) * 100.0
+        idx = pd.date_range("2026-01-01", periods=n, freq="4h")
+        vol = np.full(n, 1000.0)  # uniform; last bar == rolling avg
+        df = pd.DataFrame(
+            {"open": c, "high": c, "low": c, "close": c, "volume": vol},
+            index=idx,
+        )
+        df._sym = symbol  # type: ignore[attr-defined]
+        return df
+
+    def signal_fn(df):
+        df._sym = getattr(df, "_sym", None)
+        return df
+
+    def controlled_latest_signal(out, **kwargs):
+        sym = getattr(out, "_sym", None)
+        if sym and sym in sig_map:
+            return sig_map[sym]
+        return {"state": "BEARISH", "strength": 0.0, "flip": False, "price": 100.0}
+
+    monkeypatch.setattr("agents.scanner_agent.latest_signal", controlled_latest_signal)
+    scanner = Scanner(cfg, fetcher, signal_fn=signal_fn)
+    events = scanner.scan(["EQ/USDT"])
+
+    symbols = [e.symbol for e in events]
+    assert "EQ/USDT" not in symbols, (
+        "EQ/USDT last_vol equals threshold exactly and must be FILTERED (strict > required)"
+    )
+
+
 def test_scan_keeps_fresh_flip_events():
     """Scanner must include symbols with a recent flip_detected=True."""
     cfg = Config(

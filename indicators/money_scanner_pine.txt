@@ -309,6 +309,11 @@ sym30 = input.symbol("BLOFIN:JUPUSDT.P",  "Symbol 30",  group="Symbols")
 // Table rendering
 // ============================================================================
 
+// ---- Helper functions (must be at global scope in Pine v6) ----------------
+_rowColor(isBull) => isBull ? color.new(color.teal, 75) : color.new(color.red, 75)
+_stateStr(isBull) => isBull ? "BULL" : "BEAR"
+_flipStr(isFlip)  => isFlip ? "YES" : "-"
+
 // Only render on the last bar for performance
 if barstate.islast
     // ---- Create table (5 columns: #, Symbol, State, Strength, Flip) -------
@@ -326,14 +331,6 @@ if barstate.islast
     table.cell(t, 2, 0, "State",    text_color=color.white, bgcolor=color.new(color.navy, 30), text_size=size.small)
     table.cell(t, 3, 0, "Strength", text_color=color.white, bgcolor=color.new(color.navy, 30), text_size=size.small)
     table.cell(t, 4, 0, "Flip",     text_color=color.white, bgcolor=color.new(color.navy, 30), text_size=size.small)
-
-    // ---- Helper: render one row -------------------------------------------
-    // Pine v6 does not support user-defined procedures with side effects on
-    // tables inside functions called from barstate.islast; we inline each row.
-
-    _rowColor(isBull) => isBull ? color.new(color.teal, 75) : color.new(color.red, 75)
-    _stateStr(isBull) => isBull ? "BULL" : "BEAR"
-    _flipStr(isFlip)  => isFlip ? "YES" : "-"
 
     table.cell(t, 0, 1,  "01",                     text_color=color.white, bgcolor=_rowColor(bull01), text_size=size.small)
     table.cell(t, 1, 1,  sym01,                     text_color=color.white, bgcolor=_rowColor(bull01), text_size=size.small)

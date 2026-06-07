@@ -195,15 +195,20 @@ def test_build_chart_image_bytes_are_png():
 
 
 def test_send_uses_link_fallback_when_image_raises(monkeypatch):
-    """When build_chart_image raises, send() must fall back to including the chart link."""
+    """When build_chart_image raises, send() must fall back to including the chart link.
+
+    Passes a REAL DataFrame and monkeypatches build_chart_image to raise, so the
+    test exercises the actual fallback path (df is not None, image gen attempted
+    but fails).
+    """
     captured = {}
 
-    def fake_post(msg, cfg):
+    def fake_post(msg, cfg, image_bytes=None):
         captured["msg"] = msg
 
     monkeypatch.setattr("agents.alert_agent._post_telegram", fake_post)
-    monkeypatch.setattr("agents.alert_agent._post_discord", lambda msg, cfg: None)
-    monkeypatch.setattr("agents.alert_agent._send_email", lambda msg, cfg: None)
+    monkeypatch.setattr("agents.alert_agent._post_discord", lambda msg, cfg, image_bytes=None: None)
+    monkeypatch.setattr("agents.alert_agent._send_email", lambda msg, cfg, image_bytes=None: None)
     monkeypatch.setattr(
         "agents.alert_agent.build_chart_image",
         lambda df: (_ for _ in ()).throw(RuntimeError("kaleido unavailable")),
@@ -211,7 +216,8 @@ def test_send_uses_link_fallback_when_image_raises(monkeypatch):
 
     cfg = _make_cfg(telegram=True, send_chart_image=True)
     event = _make_event(symbol="SOL/USDT")
-    AlertAgent(cfg).send(event)
+    # Pass a real DataFrame so df is not None and image generation is attempted
+    AlertAgent(cfg).send(event, df=_make_ohlcv_df())
 
     msg = captured.get("msg", "")
     assert "tradingview.com" in msg, (
@@ -232,7 +238,8 @@ def test_send_includes_image_bytes_when_available(monkeypatch):
     monkeypatch.setattr("agents.alert_agent.build_chart_image", lambda df: b"\x89PNG\r\n\x1a\nFAKE")
 
     cfg = _make_cfg(telegram=True, send_chart_image=True)
-    AlertAgent(cfg).send(_make_event())
+    # Must pass a real DataFrame so df is not None and image generation is attempted
+    AlertAgent(cfg).send(_make_event(), df=_make_ohlcv_df())
 
     assert sent_with_image.get("bytes") == b"\x89PNG\r\n\x1a\nFAKE", (
         "Transport should receive image bytes when image is available"
@@ -305,6 +312,72 @@ def test_safe_err_scrubs_webhook_url():
     result = _safe_err(exc, webhook)
     assert webhook not in result, f"Webhook URL leaked into error string: {result!r}"
     assert "***" in result
+
+
+def test_send_email_smtp_exception_does_not_leak_password(monkeypatch):
+    """When smtplib raises an exception containing the SMTP password, the
+    exception that escapes _send_email must NOT contain the raw password."""
+    import smtplib
+    from unittest.mock import MagicMock, patch
+
+    smtp_password = "s3cr3t_smtp_passw0rd"
+
+    smtp_mock = MagicMock()
+    smtp_mock.__enter__ = lambda s: smtp_mock
+    smtp_mock.__exit__ = MagicMock(return_value=False)
+    # Simulate server.login raising with the password embedded in the message
+    smtp_mock.login.side_effect = smtplib.SMTPAuthenticationError(
+        535, f"5.7.8 Username and Password not accepted: {smtp_password}".encode()
+    )
+
+    env = {
+        "SMTP_HOST": "smtp.example.com",
+        "SMTP_PORT": "587",
+        "SMTP_USER": "user@example.com",
+        "ALERT_EMAIL_TO": "dest@example.com",
+        "SMTP_PASSWORD": smtp_password,
+    }
+
+    with patch("smtplib.SMTP", return_value=smtp_mock), \
+         patch.dict("os.environ", env, clear=False):
+        from agents.alert_agent import _send_email
+        from utils.config_schema import Config
+        cfg = Config()
+        with pytest.raises(Exception) as exc_info:
+            _send_email("Test message", cfg)
+
+    leaked_msg = str(exc_info.value)
+    assert smtp_password not in leaked_msg, (
+        f"SMTP password leaked in exception message: {leaked_msg!r}"
+    )
+
+
+def test_send_df_none_skips_image_generation(monkeypatch):
+    """When df is None, build_chart_image must NOT be called even if send_chart_image=True."""
+    image_built = {}
+    monkeypatch.setattr(
+        "agents.alert_agent.build_chart_image",
+        lambda df: image_built.setdefault("called", True) or b"PNG",
+    )
+    captured = {}
+    monkeypatch.setattr(
+        "agents.alert_agent._post_telegram",
+        lambda msg, cfg, image_bytes=None: captured.update({"msg": msg, "ib": image_bytes}),
+    )
+    monkeypatch.setattr("agents.alert_agent._post_discord", lambda msg, cfg, image_bytes=None: None)
+    monkeypatch.setattr("agents.alert_agent._send_email", lambda msg, cfg, image_bytes=None: None)
+
+    cfg = _make_cfg(telegram=True, send_chart_image=True)
+    # df=None: image generation must be skipped; link must still appear in message
+    AlertAgent(cfg).send(_make_event(symbol="BTC/USDT"), df=None)
+
+    assert "called" not in image_built, (
+        "build_chart_image must NOT be called when df is None"
+    )
+    assert captured.get("ib") is None, "No image bytes should be passed to transport when df is None"
+    assert "tradingview.com" in captured.get("msg", ""), (
+        "Chart link must appear in message even when df is None"
+    )
 
 
 # ---------------------------------------------------------------------------
