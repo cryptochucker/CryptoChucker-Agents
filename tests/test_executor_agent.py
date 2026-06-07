@@ -335,14 +335,21 @@ def test_profit_target_exit_is_net_of_fees(tmp_path) -> None:
 
     # Verify the stored net PnL from the closed trade record matches expected
     closed_trade = closed[0]
-    entry_notional = entry_price * closed_trade["qty"]
-    exit_notional = exact_exit_price * closed_trade["qty"]
+    qty = closed_trade["qty"]
+    entry_notional = entry_price * qty
+    exit_notional = exact_exit_price * qty
     realized_net_pct = (exit_notional * (1.0 - taker) - entry_notional * (1.0 + taker)) / entry_notional
     assert realized_net_pct >= target_pct, (
         f"Net PnL {realized_net_pct:.6f} must be >= profit_target_pct {target_pct}"
     )
-    # Also confirm the stored pnl field is positive
+    # Assert the stored pnl field is positive
     assert closed_trade["pnl"] > 0, "Stored net PnL must be positive"
+    # Precisely assert the stored pnl matches both fee legs (within float tolerance)
+    expected_net_pnl = (exact_exit_price - entry_price) * qty - (entry_price * qty * taker) - (exit_notional * taker)
+    assert closed_trade["pnl"] == pytest.approx(expected_net_pnl, rel=1e-6), (
+        f"Stored pnl {closed_trade['pnl']:.8f} must equal expected net pnl {expected_net_pnl:.8f} "
+        f"(gross - entry_fee - exit_fee, both taker legs)"
+    )
 
 
 def test_profit_target_not_triggered_below_net_threshold(tmp_path) -> None:
@@ -561,16 +568,17 @@ def test_executor_paper_signal_never_reads_secrets(tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_entry_refused_when_post_entry_exposure_would_breach(tmp_path) -> None:
-    """MEDIUM 3: a new entry that would push total exposure > max_exposure_pct must be refused.
+def test_entry_capped_when_risk_size_would_breach_exposure(tmp_path) -> None:
+    """MEDIUM 3 (updated): a new entry is CAPPED (not refused) when the risk-based size
+    would exceed max_exposure_pct, but there is still room available.
 
     Setup: max_exposure_pct=0.10 (10%), account=10000 -> max notional=1000.
     Existing open position: 900 notional (already at 9% exposure).
-    New entry notional at risk_pct=0.01 -> risk_amount=100, stop 2% below = 2 per unit
-    -> qty=50 -> notional=50*100=5000 -> post-entry exposure=5900/10000=59% -> REFUSED.
+    Room remaining: 100 notional (1%).
+    Risk-based qty at risk_pct=0.01 -> risk_amount=100, stop 2% below = 2/unit
+    -> risk_based_qty=50 -> risk_notional=5000, exceeds room.
+    Expected: entry fires with capped qty = 100/100 = 1.0 unit (not refused).
     """
-    cfg = _make_cfg(balance=10_000.0, risk_pct=0.01)
-    # Override max_exposure_pct to something tight
     cfg = Config(
         exchange="blofin",
         executor=ExecutorCfg(profit_target_pct=0.06, use_dip_filter=False,
@@ -602,8 +610,13 @@ def test_entry_refused_when_post_entry_exposure_would_breach(tmp_path) -> None:
     ex.on_signal(_bullish_event(price=100.0))
 
     new_trades = [t for t in store.load_trades() if t["symbol"] == "BTC/USDT"]
-    assert len(new_trades) == 0, (
-        "Entry should have been refused: post-entry exposure would exceed max_exposure_pct"
+    assert len(new_trades) >= 1, (
+        "Entry should have fired (capped to remaining room), not refused"
+    )
+    # The resulting notional must not exceed max_exposure room (100), with float tolerance
+    capped_notional = new_trades[0]["qty"] * new_trades[0]["entry_price"]
+    assert capped_notional <= 100.0 + 1e-6, (
+        f"Capped notional {capped_notional:.4f} must not exceed the room (100)"
     )
 
 
@@ -701,3 +714,97 @@ def test_dip_filter_no_df_skips_check(tmp_path) -> None:
 
     trades = [t for t in store.load_trades() if t["symbol"] == "BTC/USDT"]
     assert len(trades) >= 1, "Entry should proceed when no df is provided (dip check skipped)"
+
+
+# ---------------------------------------------------------------------------
+# 14. Gate 4 MEDIUM -- position-size capping so paper entries actually fire
+# ---------------------------------------------------------------------------
+
+
+def test_default_config_entry_fires_and_notional_capped(tmp_path) -> None:
+    """Gate 4 MEDIUM: with committed defaults (risk_pct=0.01, trailing_stop=0.03,
+    max_exposure=0.15, balance=10000), a bullish fresh-flip must produce a paper
+    entry, and the resulting position notional must be <= max_exposure_pct * balance.
+
+    Previously this combination would produce a risk-based qty with notional ~33%
+    which tripped the post-entry exposure check, blocking ALL paper entries.
+    After the cap-not-refuse fix the entry fires with the notional capped.
+    """
+    cfg = Config(
+        exchange="blofin",
+        executor=ExecutorCfg(
+            profit_target_pct=0.06,
+            use_dip_filter=False,
+            trailing_stop_pct=0.03,
+            max_hold_hours=48,
+        ),
+        fees=FeesCfg(rates={"blofin": {"maker": 0.0002, "taker": 0.0006}}),
+        risk=RiskCfg(
+            account_balance=10_000.0,
+            risk_pct=0.01,
+            max_exposure_pct=0.15,
+            max_trades_per_day=10,
+            max_consecutive_losses=4,
+            max_drawdown_pct=0.20,
+        ),
+    )
+    store = _make_store(tmp_path)
+    client = _mock_ccxt_client()
+    ex = Executor(cfg, store, client=client, env=_PAPER_ENV)
+
+    ex.on_signal(_bullish_event(price=100.0))
+
+    trades = [t for t in store.load_trades() if t["symbol"] == "BTC/USDT"]
+    assert len(trades) >= 1, (
+        "Default-config bullish flip must fire a paper entry after the cap-not-refuse fix"
+    )
+    position_notional = trades[0]["qty"] * trades[0]["entry_price"]
+    max_allowed_notional = 0.15 * 10_000.0  # max_exposure_pct * balance = 1500
+    assert position_notional <= max_allowed_notional + 1e-6, (
+        f"Position notional {position_notional:.4f} must be <= max_exposure cap {max_allowed_notional:.4f}"
+    )
+
+
+def test_entry_skipped_when_already_at_max_exposure(tmp_path) -> None:
+    """Gate 4 MEDIUM: when current exposure is already at/over max_exposure_pct,
+    a new bullish flip must be skipped entirely (no room to enter).
+    """
+    cfg = Config(
+        exchange="blofin",
+        executor=ExecutorCfg(
+            profit_target_pct=0.06,
+            use_dip_filter=False,
+            trailing_stop_pct=0.03,
+            max_hold_hours=48,
+        ),
+        fees=FeesCfg(rates={"blofin": {"maker": 0.0002, "taker": 0.0006}}),
+        risk=RiskCfg(
+            account_balance=10_000.0,
+            risk_pct=0.01,
+            max_exposure_pct=0.15,
+            max_trades_per_day=10,
+            max_consecutive_losses=4,
+            max_drawdown_pct=0.20,
+        ),
+    )
+    store = _make_store(tmp_path)
+
+    # Seed an open position that already consumes exactly max_exposure_pct * balance
+    # 0.15 * 10000 = 1500 notional -> qty=15 at price=100
+    store.save_position({
+        "symbol": "ETH/USDT",
+        "mode": "paper",
+        "side": "long",
+        "entry_price": 100.0,
+        "qty": 15.0,
+        "stop_price": 97.0,
+    })
+
+    client = _mock_ccxt_client()
+    ex = Executor(cfg, store, client=client, env=_PAPER_ENV)
+    ex.on_signal(_bullish_event(price=100.0))
+
+    new_trades = [t for t in store.load_trades() if t["symbol"] == "BTC/USDT"]
+    assert len(new_trades) == 0, (
+        "Entry must be skipped when current exposure already equals max_exposure_pct (no room)"
+    )

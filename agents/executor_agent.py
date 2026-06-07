@@ -217,27 +217,38 @@ class Executor:
                 )
                 return
 
-        # --- Position sizing (needed for post-entry exposure check below) ---
+        # --- Position sizing ---
         trailing_stop_pct = exc_cfg.trailing_stop_pct if exc_cfg.trailing_stop_pct > 0 else 0.02
         stop_price = price * (1.0 - trailing_stop_pct)
-        qty = position_size(risk_cfg.account_balance, risk_cfg.risk_pct, price, stop_price)
-        new_notional = price * qty
+        risk_based_qty = position_size(risk_cfg.account_balance, risk_cfg.risk_pct, price, stop_price)
 
-        # --- Daily cap + consecutive losses + POST-ENTRY exposure ---
+        # --- Daily cap + consecutive losses ---
         # Always re-read trades_today from the store so the cap is accurate
         # even if trades were added externally or the executor was restarted.
         trades_today = self._count_trades_today()
-        # Exposure: sum open position notional / account balance AFTER this entry
+        # Pass exposure_pct=0 here; exposure is handled separately below with capping.
+        limit = check_limits(trades_today, self._consecutive_losses, 0.0, cfg)
+        if not limit.allowed:
+            logger.warning("Executor: entry blocked for %s -- %s", symbol, limit.reason)
+            return
+
+        # --- Exposure cap: size down to fit, skip only when there is no room ---
+        # Compute how much notional room remains under max_exposure_pct.
         open_positions = self._store.load_positions(status="open")
         current_exposure_notional = sum(
             (pos.get("qty") or 0) * (pos.get("entry_price") or 0) for pos in open_positions
         )
-        # Refuse when adding this position would EXCEED max_exposure_pct
-        post_entry_exposure_pct = (current_exposure_notional + new_notional) / max(risk_cfg.account_balance, 1.0)
-
-        limit = check_limits(trades_today, self._consecutive_losses, post_entry_exposure_pct, cfg)
-        if not limit.allowed:
-            logger.warning("Executor: entry blocked for %s -- %s", symbol, limit.reason)
+        max_room_notional = max(0.0, risk_cfg.max_exposure_pct * risk_cfg.account_balance - current_exposure_notional)
+        if max_room_notional <= 0.0:
+            logger.warning(
+                "Executor: entry skipped for %s -- already at/over max exposure (%.1f%%)",
+                symbol, risk_cfg.max_exposure_pct * 100,
+            )
+            return
+        # Cap the risk-based qty to what actually fits; never size UP.
+        qty = min(risk_based_qty, max_room_notional / price)
+        if qty <= 0.0:
+            logger.warning("Executor: entry skipped for %s -- capped qty rounds to zero", symbol)
             return
 
         # --- Paper fill ---
