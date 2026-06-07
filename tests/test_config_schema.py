@@ -97,3 +97,84 @@ def test_signal_cfg_min_valid_window_accepted():
     assert cfg.money_line_length == 1
     assert cfg.smooth == 1
     assert cfg.slope_len == 1
+
+
+# ---- Stage 3: ScannerCfg, AlertsCfg, WatchlistCfg ----
+
+from utils.config_schema import ScannerCfg, AlertsCfg, WatchlistCfg  # noqa: E402
+
+
+def test_scanner_cfg_defaults():
+    s = ScannerCfg()
+    assert s.interval_minutes == 5
+    assert s.min_strength == 55.0
+    assert s.rank_top_n == 10
+    assert s.volume_surge_mult == 2.0
+
+
+def test_scanner_cfg_rank_top_n_zero_raises():
+    with pytest.raises((ValueError, ValidationError)):
+        ScannerCfg(rank_top_n=0)
+
+
+def test_scanner_cfg_min_strength_too_high_raises():
+    with pytest.raises((ValueError, ValidationError)):
+        ScannerCfg(min_strength=150)
+
+
+def test_scanner_cfg_min_strength_negative_raises():
+    with pytest.raises((ValueError, ValidationError)):
+        ScannerCfg(min_strength=-1)
+
+
+def test_scanner_cfg_volume_surge_mult_zero_raises():
+    with pytest.raises((ValueError, ValidationError)):
+        ScannerCfg(volume_surge_mult=0.0)
+
+
+def test_scanner_cfg_interval_minutes_zero_raises():
+    with pytest.raises((ValueError, ValidationError)):
+        ScannerCfg(interval_minutes=0)
+
+
+def test_alerts_cfg_defaults():
+    a = AlertsCfg()
+    assert a.telegram is True
+    assert a.discord is False
+    assert a.email is False
+    assert a.send_chart_image is True
+
+
+def test_watchlist_cfg_defaults():
+    w = WatchlistCfg()
+    assert w.source == "file"
+    assert w.file == "watchlist.json"
+    assert w.top_volume_n == 50
+    assert w.blacklist == []
+    assert w.whitelist == []
+
+
+def test_watchlist_cfg_invalid_source_raises():
+    with pytest.raises((ValueError, ValidationError)):
+        WatchlistCfg(source="invalid_source")
+
+
+def test_watchlist_cfg_top_volume_n_zero_raises():
+    with pytest.raises((ValueError, ValidationError)):
+        WatchlistCfg(top_volume_n=0)
+
+
+def test_config_has_scanner_alerts_watchlist_fields(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text(yaml.safe_dump({
+        "exchange": "blofin",
+        "scanner": {"interval_minutes": 10, "min_strength": 60, "rank_top_n": 5, "volume_surge_mult": 1.5},
+        "alerts": {"telegram": False, "discord": True},
+        "watchlist": {"source": "file", "file": "my_list.json", "blacklist": ["SHIB/USDT"]},
+    }))
+    cfg = load_config(str(p))
+    assert cfg.scanner.interval_minutes == 10
+    assert cfg.scanner.rank_top_n == 5
+    assert cfg.alerts.discord is True
+    assert cfg.alerts.telegram is False
+    assert cfg.watchlist.blacklist == ["SHIB/USDT"]
