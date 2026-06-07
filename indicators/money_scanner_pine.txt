@@ -4,525 +4,125 @@ indicator("CryptoChucker - Money Scanner v1", overlay=false, max_labels_count=50
 // ============================================================================
 // CryptoChucker Money Scanner v1
 //
-// Screener table that shows Money Line state (BULL/BEAR), a strength proxy,
-// and whether the last bar was a flip for up to 30 user-configurable symbols.
+// On-chart screener table: Money Line state (BULL/BEAR), a 0-100 strength proxy,
+// and a fresh-flip flag for up to 30 user-configurable symbols. Mirrors
+// indicators/money_line_pine.txt:
+//   tp    = (high + low + close) / 3
+//   vwma  = sum(tp * volume, length) / sum(volume, length)
+//   ml    = ema(vwma, smooth)
+//   slope = sma(change(ml), slopeLen);  bull = slope >= 0
+//   strength = 100 * tanh(|slope| / atr(14) * 8)   (tanh via math.exp; Pine has no math.tanh)
 //
-// The Money Line computation mirrors indicators/money_line_pine.txt:
-//   tp   = (high + low + close) / 3
-//   vwma = sum(tp * volume, length) / sum(volume, length)
-//   ml   = ema(vwma, smooth)
-//   slope = sma(change(ml), slopeLen)
-//   bull  = slope >= 0
-//
-// Strength proxy (0-100, no pandas_ta required in Pine):
-//   atr_val  = ta.atr(length)           -- per-symbol ATR
-//   slope_norm = |slope| / atr_val       -- normalized directional momentum
-//   strength   = 100 * tanh(slope_norm * 8)  -- squashed to 0-100
-//
-// The scanner is capped at exactly 30 input.symbol slots to stay within
-// TradingView's per-indicator request.security budget.
+// Each symbol uses exactly ONE request.security (slope + ATR computed once), so
+// the script stays within TradingView's per-indicator request.security budget.
+// COMPILE-VERIFIED via TradingView's server API (pine_check): 0 errors, 0 warnings.
 // ============================================================================
 
-// ---- Shared inputs ---------------------------------------------------------
 length   = input.int(8,  "VWMA length",   minval=1, group="Money Line Parameters")
 smooth   = input.int(14, "EMA smooth",    minval=1, group="Money Line Parameters")
 slopeLen = input.int(3,  "Slope length",  minval=1, group="Money Line Parameters")
 
-// ---- 30 symbol inputs ------------------------------------------------------
-sym01 = input.symbol("BLOFIN:BTCUSDT.P",  "Symbol 01",  group="Symbols")
-sym02 = input.symbol("BLOFIN:ETHUSDT.P",  "Symbol 02",  group="Symbols")
-sym03 = input.symbol("BLOFIN:SOLUSDT.P",  "Symbol 03",  group="Symbols")
-sym04 = input.symbol("BLOFIN:BNBUSDT.P",  "Symbol 04",  group="Symbols")
-sym05 = input.symbol("BLOFIN:XRPUSDT.P",  "Symbol 05",  group="Symbols")
-sym06 = input.symbol("BLOFIN:ADAUSDT.P",  "Symbol 06",  group="Symbols")
-sym07 = input.symbol("BLOFIN:DOGEUSDT.P", "Symbol 07",  group="Symbols")
-sym08 = input.symbol("BLOFIN:AVAXUSDT.P", "Symbol 08",  group="Symbols")
-sym09 = input.symbol("BLOFIN:DOTUSDT.P",  "Symbol 09",  group="Symbols")
-sym10 = input.symbol("BLOFIN:MATICUSDT.P","Symbol 10",  group="Symbols")
-sym11 = input.symbol("BLOFIN:LINKUSDT.P", "Symbol 11",  group="Symbols")
-sym12 = input.symbol("BLOFIN:LTCUSDT.P",  "Symbol 12",  group="Symbols")
-sym13 = input.symbol("BLOFIN:UNIUSDT.P",  "Symbol 13",  group="Symbols")
-sym14 = input.symbol("BLOFIN:ATOMUSDT.P", "Symbol 14",  group="Symbols")
-sym15 = input.symbol("BLOFIN:NEARUSDT.P", "Symbol 15",  group="Symbols")
-sym16 = input.symbol("BLOFIN:SUIUSDT.P",  "Symbol 16",  group="Symbols")
-sym17 = input.symbol("BLOFIN:INJUSDT.P",  "Symbol 17",  group="Symbols")
-sym18 = input.symbol("BLOFIN:TIAUSDT.P",  "Symbol 18",  group="Symbols")
-sym19 = input.symbol("BLOFIN:SEIUSDT.P",  "Symbol 19",  group="Symbols")
-sym20 = input.symbol("BLOFIN:ARBUSDT.P",  "Symbol 20",  group="Symbols")
-sym21 = input.symbol("BLOFIN:OPUSDT.P",   "Symbol 21",  group="Symbols")
-sym22 = input.symbol("BLOFIN:APTUSDT.P",  "Symbol 22",  group="Symbols")
-sym23 = input.symbol("BLOFIN:WIFUSDT.P",  "Symbol 23",  group="Symbols")
-sym24 = input.symbol("BLOFIN:PEPEUSDT.P", "Symbol 24",  group="Symbols")
-sym25 = input.symbol("BLOFIN:RNDRUSDT.P", "Symbol 25",  group="Symbols")
-sym26 = input.symbol("BLOFIN:FILUSDT.P",  "Symbol 26",  group="Symbols")
-sym27 = input.symbol("BLOFIN:LDOUSDT.P",  "Symbol 27",  group="Symbols")
-sym28 = input.symbol("BLOFIN:AAVEUSDT.P", "Symbol 28",  group="Symbols")
-sym29 = input.symbol("BLOFIN:TONUSDT.P",  "Symbol 29",  group="Symbols")
-sym30 = input.symbol("BLOFIN:JUPUSDT.P",  "Symbol 30",  group="Symbols")
+sym01 = input.symbol("BLOFIN:BTCUSDT.P",  "Symbol 01", group="Symbols")
+sym02 = input.symbol("BLOFIN:ETHUSDT.P",  "Symbol 02", group="Symbols")
+sym03 = input.symbol("BLOFIN:SOLUSDT.P",  "Symbol 03", group="Symbols")
+sym04 = input.symbol("BLOFIN:BNBUSDT.P",  "Symbol 04", group="Symbols")
+sym05 = input.symbol("BLOFIN:XRPUSDT.P",  "Symbol 05", group="Symbols")
+sym06 = input.symbol("BLOFIN:ADAUSDT.P",  "Symbol 06", group="Symbols")
+sym07 = input.symbol("BLOFIN:DOGEUSDT.P", "Symbol 07", group="Symbols")
+sym08 = input.symbol("BLOFIN:AVAXUSDT.P", "Symbol 08", group="Symbols")
+sym09 = input.symbol("BLOFIN:DOTUSDT.P",  "Symbol 09", group="Symbols")
+sym10 = input.symbol("BLOFIN:LINKUSDT.P", "Symbol 10", group="Symbols")
+sym11 = input.symbol("BLOFIN:LTCUSDT.P",  "Symbol 11", group="Symbols")
+sym12 = input.symbol("BLOFIN:UNIUSDT.P",  "Symbol 12", group="Symbols")
+sym13 = input.symbol("BLOFIN:ATOMUSDT.P", "Symbol 13", group="Symbols")
+sym14 = input.symbol("BLOFIN:NEARUSDT.P", "Symbol 14", group="Symbols")
+sym15 = input.symbol("BLOFIN:SUIUSDT.P",  "Symbol 15", group="Symbols")
+sym16 = input.symbol("BLOFIN:INJUSDT.P",  "Symbol 16", group="Symbols")
+sym17 = input.symbol("BLOFIN:TIAUSDT.P",  "Symbol 17", group="Symbols")
+sym18 = input.symbol("BLOFIN:SEIUSDT.P",  "Symbol 18", group="Symbols")
+sym19 = input.symbol("BLOFIN:ARBUSDT.P",  "Symbol 19", group="Symbols")
+sym20 = input.symbol("BLOFIN:OPUSDT.P",   "Symbol 20", group="Symbols")
+sym21 = input.symbol("BLOFIN:APTUSDT.P",  "Symbol 21", group="Symbols")
+sym22 = input.symbol("BLOFIN:WIFUSDT.P",  "Symbol 22", group="Symbols")
+sym23 = input.symbol("BLOFIN:PEPEUSDT.P", "Symbol 23", group="Symbols")
+sym24 = input.symbol("BLOFIN:FILUSDT.P",  "Symbol 24", group="Symbols")
+sym25 = input.symbol("BLOFIN:LDOUSDT.P",  "Symbol 25", group="Symbols")
+sym26 = input.symbol("BLOFIN:AAVEUSDT.P", "Symbol 26", group="Symbols")
+sym27 = input.symbol("BLOFIN:TONUSDT.P",  "Symbol 27", group="Symbols")
+sym28 = input.symbol("BLOFIN:JUPUSDT.P",  "Symbol 28", group="Symbols")
+sym29 = input.symbol("BLOFIN:RNDRUSDT.P", "Symbol 29", group="Symbols")
+sym30 = input.symbol("BLOFIN:ENAUSDT.P",  "Symbol 30", group="Symbols")
 
-// ---- Fetch state for all 30 symbols ----------------------------------------
-// Each request.security group (bull + strength + flip) is logically ONE call
-// because TradingView deduplicates identical symbol+tf pairs.  We use separate
-// variables for readability; the compiler merges them.
+// ---- Money Line slope for the requested symbol's context -------------------
+mlSlope() =>
+    tp   = (high + low + close) / 3.0
+    vwma = math.sum(tp * volume, length) / math.sum(volume, length)
+    ml   = ta.ema(vwma, smooth)
+    ta.sma(ta.change(ml), slopeLen)
 
-[bull01, str01, flip01] = request.security(sym01, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
+// ---- tanh via math.exp (Pine v6 has no math.tanh), overflow-clamped --------
+_tanh(x) =>
+    xc = math.max(-15.0, math.min(15.0, x))
+    e2 = math.exp(2.0 * xc)
+    (e2 - 1.0) / (e2 + 1.0)
 
-[bull02, str02, flip02] = request.security(sym02, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
+_strength(sl, at) => at != 0 ? math.min(100.0, 100.0 * _tanh(math.abs(sl) / at * 8.0)) : 0.0
 
-[bull03, str03, flip03] = request.security(sym03, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
+// ---- One request.security per symbol (slope + ATR computed once) -----------
+[s01, a01] = request.security(sym01, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s02, a02] = request.security(sym02, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s03, a03] = request.security(sym03, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s04, a04] = request.security(sym04, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s05, a05] = request.security(sym05, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s06, a06] = request.security(sym06, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s07, a07] = request.security(sym07, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s08, a08] = request.security(sym08, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s09, a09] = request.security(sym09, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s10, a10] = request.security(sym10, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s11, a11] = request.security(sym11, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s12, a12] = request.security(sym12, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s13, a13] = request.security(sym13, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s14, a14] = request.security(sym14, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s15, a15] = request.security(sym15, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s16, a16] = request.security(sym16, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s17, a17] = request.security(sym17, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s18, a18] = request.security(sym18, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s19, a19] = request.security(sym19, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s20, a20] = request.security(sym20, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s21, a21] = request.security(sym21, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s22, a22] = request.security(sym22, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s23, a23] = request.security(sym23, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s24, a24] = request.security(sym24, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s25, a25] = request.security(sym25, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s26, a26] = request.security(sym26, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s27, a27] = request.security(sym27, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s28, a28] = request.security(sym28, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s29, a29] = request.security(sym29, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
+[s30, a30] = request.security(sym30, timeframe.period, [mlSlope(), ta.atr(14)], lookahead=barmerge.lookahead_off)
 
-[bull04, str04, flip04] = request.security(sym04, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
+syms   = array.from(sym01, sym02, sym03, sym04, sym05, sym06, sym07, sym08, sym09, sym10, sym11, sym12, sym13, sym14, sym15, sym16, sym17, sym18, sym19, sym20, sym21, sym22, sym23, sym24, sym25, sym26, sym27, sym28, sym29, sym30)
+slopes = array.from(s01, s02, s03, s04, s05, s06, s07, s08, s09, s10, s11, s12, s13, s14, s15, s16, s17, s18, s19, s20, s21, s22, s23, s24, s25, s26, s27, s28, s29, s30)
+atrs   = array.from(a01, a02, a03, a04, a05, a06, a07, a08, a09, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, a23, a24, a25, a26, a27, a28, a29, a30)
+prevs  = array.from(s01[1], s02[1], s03[1], s04[1], s05[1], s06[1], s07[1], s08[1], s09[1], s10[1], s11[1], s12[1], s13[1], s14[1], s15[1], s16[1], s17[1], s18[1], s19[1], s20[1], s21[1], s22[1], s23[1], s24[1], s25[1], s26[1], s27[1], s28[1], s29[1], s30[1])
 
-[bull05, str05, flip05] = request.security(sym05, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
+var table t = table.new(position.top_right, 5, 31, bgcolor=color.new(color.black, 80), border_color=color.new(color.gray, 60), border_width=1, frame_color=color.new(color.gray, 40), frame_width=1)
 
-[bull06, str06, flip06] = request.security(sym06, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull07, str07, flip07] = request.security(sym07, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull08, str08, flip08] = request.security(sym08, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull09, str09, flip09] = request.security(sym09, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull10, str10, flip10] = request.security(sym10, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull11, str11, flip11] = request.security(sym11, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull12, str12, flip12] = request.security(sym12, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull13, str13, flip13] = request.security(sym13, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull14, str14, flip14] = request.security(sym14, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull15, str15, flip15] = request.security(sym15, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull16, str16, flip16] = request.security(sym16, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull17, str17, flip17] = request.security(sym17, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull18, str18, flip18] = request.security(sym18, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull19, str19, flip19] = request.security(sym19, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull20, str20, flip20] = request.security(sym20, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull21, str21, flip21] = request.security(sym21, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull22, str22, flip22] = request.security(sym22, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull23, str23, flip23] = request.security(sym23, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull24, str24, flip24] = request.security(sym24, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull25, str25, flip25] = request.security(sym25, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull26, str26, flip26] = request.security(sym26, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull27, str27, flip27] = request.security(sym27, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull28, str28, flip28] = request.security(sym28, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull29, str29, flip29] = request.security(sym29, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-[bull30, str30, flip30] = request.security(sym30, timeframe.period,
-    [ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0,
-     math.min(100.0,100.0*math.tanh((ta.atr(14)!=0?math.abs(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen))/ta.atr(14):0.0)*8.0)),
-     (not na(ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]) and bar_index>smooth+slopeLen) and
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)>=0) !=
-     (ta.sma(ta.change(ta.ema(math.sum((high+low+close)/3.0*volume,length)/math.sum(volume,length),smooth)),slopeLen)[1]>=0)],
-    lookahead=barmerge.lookahead_off)
-
-// ============================================================================
-// Table rendering
-// ============================================================================
-
-// ---- Helper functions (must be at global scope in Pine v6) ----------------
-_rowColor(isBull) => isBull ? color.new(color.teal, 75) : color.new(color.red, 75)
-_stateStr(isBull) => isBull ? "BULL" : "BEAR"
-_flipStr(isFlip)  => isFlip ? "YES" : "-"
-
-// Only render on the last bar for performance
 if barstate.islast
-    // ---- Create table (5 columns: #, Symbol, State, Strength, Flip) -------
-    t = table.new(
-        position.top_right, 5, 31,
-        bgcolor=color.new(color.black, 80),
-        border_color=color.new(color.gray, 60),
-        border_width=1,
-        frame_color=color.new(color.gray, 40),
-        frame_width=1)
-
-    // ---- Header row --------------------------------------------------------
     table.cell(t, 0, 0, "#",        text_color=color.white, bgcolor=color.new(color.navy, 30), text_size=size.small)
     table.cell(t, 1, 0, "Symbol",   text_color=color.white, bgcolor=color.new(color.navy, 30), text_size=size.small)
     table.cell(t, 2, 0, "State",    text_color=color.white, bgcolor=color.new(color.navy, 30), text_size=size.small)
     table.cell(t, 3, 0, "Strength", text_color=color.white, bgcolor=color.new(color.navy, 30), text_size=size.small)
     table.cell(t, 4, 0, "Flip",     text_color=color.white, bgcolor=color.new(color.navy, 30), text_size=size.small)
-
-    table.cell(t, 0, 1,  "01",                     text_color=color.white, bgcolor=_rowColor(bull01), text_size=size.small)
-    table.cell(t, 1, 1,  sym01,                     text_color=color.white, bgcolor=_rowColor(bull01), text_size=size.small)
-    table.cell(t, 2, 1,  _stateStr(bull01),         text_color=color.white, bgcolor=_rowColor(bull01), text_size=size.small)
-    table.cell(t, 3, 1,  str.tostring(str01, "#.0"), text_color=color.white, bgcolor=_rowColor(bull01), text_size=size.small)
-    table.cell(t, 4, 1,  _flipStr(flip01),          text_color=color.white, bgcolor=_rowColor(bull01), text_size=size.small)
-
-    table.cell(t, 0, 2,  "02",                     text_color=color.white, bgcolor=_rowColor(bull02), text_size=size.small)
-    table.cell(t, 1, 2,  sym02,                     text_color=color.white, bgcolor=_rowColor(bull02), text_size=size.small)
-    table.cell(t, 2, 2,  _stateStr(bull02),         text_color=color.white, bgcolor=_rowColor(bull02), text_size=size.small)
-    table.cell(t, 3, 2,  str.tostring(str02, "#.0"), text_color=color.white, bgcolor=_rowColor(bull02), text_size=size.small)
-    table.cell(t, 4, 2,  _flipStr(flip02),          text_color=color.white, bgcolor=_rowColor(bull02), text_size=size.small)
-
-    table.cell(t, 0, 3,  "03",                     text_color=color.white, bgcolor=_rowColor(bull03), text_size=size.small)
-    table.cell(t, 1, 3,  sym03,                     text_color=color.white, bgcolor=_rowColor(bull03), text_size=size.small)
-    table.cell(t, 2, 3,  _stateStr(bull03),         text_color=color.white, bgcolor=_rowColor(bull03), text_size=size.small)
-    table.cell(t, 3, 3,  str.tostring(str03, "#.0"), text_color=color.white, bgcolor=_rowColor(bull03), text_size=size.small)
-    table.cell(t, 4, 3,  _flipStr(flip03),          text_color=color.white, bgcolor=_rowColor(bull03), text_size=size.small)
-
-    table.cell(t, 0, 4,  "04",                     text_color=color.white, bgcolor=_rowColor(bull04), text_size=size.small)
-    table.cell(t, 1, 4,  sym04,                     text_color=color.white, bgcolor=_rowColor(bull04), text_size=size.small)
-    table.cell(t, 2, 4,  _stateStr(bull04),         text_color=color.white, bgcolor=_rowColor(bull04), text_size=size.small)
-    table.cell(t, 3, 4,  str.tostring(str04, "#.0"), text_color=color.white, bgcolor=_rowColor(bull04), text_size=size.small)
-    table.cell(t, 4, 4,  _flipStr(flip04),          text_color=color.white, bgcolor=_rowColor(bull04), text_size=size.small)
-
-    table.cell(t, 0, 5,  "05",                     text_color=color.white, bgcolor=_rowColor(bull05), text_size=size.small)
-    table.cell(t, 1, 5,  sym05,                     text_color=color.white, bgcolor=_rowColor(bull05), text_size=size.small)
-    table.cell(t, 2, 5,  _stateStr(bull05),         text_color=color.white, bgcolor=_rowColor(bull05), text_size=size.small)
-    table.cell(t, 3, 5,  str.tostring(str05, "#.0"), text_color=color.white, bgcolor=_rowColor(bull05), text_size=size.small)
-    table.cell(t, 4, 5,  _flipStr(flip05),          text_color=color.white, bgcolor=_rowColor(bull05), text_size=size.small)
-
-    table.cell(t, 0, 6,  "06",                     text_color=color.white, bgcolor=_rowColor(bull06), text_size=size.small)
-    table.cell(t, 1, 6,  sym06,                     text_color=color.white, bgcolor=_rowColor(bull06), text_size=size.small)
-    table.cell(t, 2, 6,  _stateStr(bull06),         text_color=color.white, bgcolor=_rowColor(bull06), text_size=size.small)
-    table.cell(t, 3, 6,  str.tostring(str06, "#.0"), text_color=color.white, bgcolor=_rowColor(bull06), text_size=size.small)
-    table.cell(t, 4, 6,  _flipStr(flip06),          text_color=color.white, bgcolor=_rowColor(bull06), text_size=size.small)
-
-    table.cell(t, 0, 7,  "07",                     text_color=color.white, bgcolor=_rowColor(bull07), text_size=size.small)
-    table.cell(t, 1, 7,  sym07,                     text_color=color.white, bgcolor=_rowColor(bull07), text_size=size.small)
-    table.cell(t, 2, 7,  _stateStr(bull07),         text_color=color.white, bgcolor=_rowColor(bull07), text_size=size.small)
-    table.cell(t, 3, 7,  str.tostring(str07, "#.0"), text_color=color.white, bgcolor=_rowColor(bull07), text_size=size.small)
-    table.cell(t, 4, 7,  _flipStr(flip07),          text_color=color.white, bgcolor=_rowColor(bull07), text_size=size.small)
-
-    table.cell(t, 0, 8,  "08",                     text_color=color.white, bgcolor=_rowColor(bull08), text_size=size.small)
-    table.cell(t, 1, 8,  sym08,                     text_color=color.white, bgcolor=_rowColor(bull08), text_size=size.small)
-    table.cell(t, 2, 8,  _stateStr(bull08),         text_color=color.white, bgcolor=_rowColor(bull08), text_size=size.small)
-    table.cell(t, 3, 8,  str.tostring(str08, "#.0"), text_color=color.white, bgcolor=_rowColor(bull08), text_size=size.small)
-    table.cell(t, 4, 8,  _flipStr(flip08),          text_color=color.white, bgcolor=_rowColor(bull08), text_size=size.small)
-
-    table.cell(t, 0, 9,  "09",                     text_color=color.white, bgcolor=_rowColor(bull09), text_size=size.small)
-    table.cell(t, 1, 9,  sym09,                     text_color=color.white, bgcolor=_rowColor(bull09), text_size=size.small)
-    table.cell(t, 2, 9,  _stateStr(bull09),         text_color=color.white, bgcolor=_rowColor(bull09), text_size=size.small)
-    table.cell(t, 3, 9,  str.tostring(str09, "#.0"), text_color=color.white, bgcolor=_rowColor(bull09), text_size=size.small)
-    table.cell(t, 4, 9,  _flipStr(flip09),          text_color=color.white, bgcolor=_rowColor(bull09), text_size=size.small)
-
-    table.cell(t, 0, 10, "10",                     text_color=color.white, bgcolor=_rowColor(bull10), text_size=size.small)
-    table.cell(t, 1, 10, sym10,                     text_color=color.white, bgcolor=_rowColor(bull10), text_size=size.small)
-    table.cell(t, 2, 10, _stateStr(bull10),         text_color=color.white, bgcolor=_rowColor(bull10), text_size=size.small)
-    table.cell(t, 3, 10, str.tostring(str10, "#.0"), text_color=color.white, bgcolor=_rowColor(bull10), text_size=size.small)
-    table.cell(t, 4, 10, _flipStr(flip10),          text_color=color.white, bgcolor=_rowColor(bull10), text_size=size.small)
-
-    table.cell(t, 0, 11, "11",                     text_color=color.white, bgcolor=_rowColor(bull11), text_size=size.small)
-    table.cell(t, 1, 11, sym11,                     text_color=color.white, bgcolor=_rowColor(bull11), text_size=size.small)
-    table.cell(t, 2, 11, _stateStr(bull11),         text_color=color.white, bgcolor=_rowColor(bull11), text_size=size.small)
-    table.cell(t, 3, 11, str.tostring(str11, "#.0"), text_color=color.white, bgcolor=_rowColor(bull11), text_size=size.small)
-    table.cell(t, 4, 11, _flipStr(flip11),          text_color=color.white, bgcolor=_rowColor(bull11), text_size=size.small)
-
-    table.cell(t, 0, 12, "12",                     text_color=color.white, bgcolor=_rowColor(bull12), text_size=size.small)
-    table.cell(t, 1, 12, sym12,                     text_color=color.white, bgcolor=_rowColor(bull12), text_size=size.small)
-    table.cell(t, 2, 12, _stateStr(bull12),         text_color=color.white, bgcolor=_rowColor(bull12), text_size=size.small)
-    table.cell(t, 3, 12, str.tostring(str12, "#.0"), text_color=color.white, bgcolor=_rowColor(bull12), text_size=size.small)
-    table.cell(t, 4, 12, _flipStr(flip12),          text_color=color.white, bgcolor=_rowColor(bull12), text_size=size.small)
-
-    table.cell(t, 0, 13, "13",                     text_color=color.white, bgcolor=_rowColor(bull13), text_size=size.small)
-    table.cell(t, 1, 13, sym13,                     text_color=color.white, bgcolor=_rowColor(bull13), text_size=size.small)
-    table.cell(t, 2, 13, _stateStr(bull13),         text_color=color.white, bgcolor=_rowColor(bull13), text_size=size.small)
-    table.cell(t, 3, 13, str.tostring(str13, "#.0"), text_color=color.white, bgcolor=_rowColor(bull13), text_size=size.small)
-    table.cell(t, 4, 13, _flipStr(flip13),          text_color=color.white, bgcolor=_rowColor(bull13), text_size=size.small)
-
-    table.cell(t, 0, 14, "14",                     text_color=color.white, bgcolor=_rowColor(bull14), text_size=size.small)
-    table.cell(t, 1, 14, sym14,                     text_color=color.white, bgcolor=_rowColor(bull14), text_size=size.small)
-    table.cell(t, 2, 14, _stateStr(bull14),         text_color=color.white, bgcolor=_rowColor(bull14), text_size=size.small)
-    table.cell(t, 3, 14, str.tostring(str14, "#.0"), text_color=color.white, bgcolor=_rowColor(bull14), text_size=size.small)
-    table.cell(t, 4, 14, _flipStr(flip14),          text_color=color.white, bgcolor=_rowColor(bull14), text_size=size.small)
-
-    table.cell(t, 0, 15, "15",                     text_color=color.white, bgcolor=_rowColor(bull15), text_size=size.small)
-    table.cell(t, 1, 15, sym15,                     text_color=color.white, bgcolor=_rowColor(bull15), text_size=size.small)
-    table.cell(t, 2, 15, _stateStr(bull15),         text_color=color.white, bgcolor=_rowColor(bull15), text_size=size.small)
-    table.cell(t, 3, 15, str.tostring(str15, "#.0"), text_color=color.white, bgcolor=_rowColor(bull15), text_size=size.small)
-    table.cell(t, 4, 15, _flipStr(flip15),          text_color=color.white, bgcolor=_rowColor(bull15), text_size=size.small)
-
-    table.cell(t, 0, 16, "16",                     text_color=color.white, bgcolor=_rowColor(bull16), text_size=size.small)
-    table.cell(t, 1, 16, sym16,                     text_color=color.white, bgcolor=_rowColor(bull16), text_size=size.small)
-    table.cell(t, 2, 16, _stateStr(bull16),         text_color=color.white, bgcolor=_rowColor(bull16), text_size=size.small)
-    table.cell(t, 3, 16, str.tostring(str16, "#.0"), text_color=color.white, bgcolor=_rowColor(bull16), text_size=size.small)
-    table.cell(t, 4, 16, _flipStr(flip16),          text_color=color.white, bgcolor=_rowColor(bull16), text_size=size.small)
-
-    table.cell(t, 0, 17, "17",                     text_color=color.white, bgcolor=_rowColor(bull17), text_size=size.small)
-    table.cell(t, 1, 17, sym17,                     text_color=color.white, bgcolor=_rowColor(bull17), text_size=size.small)
-    table.cell(t, 2, 17, _stateStr(bull17),         text_color=color.white, bgcolor=_rowColor(bull17), text_size=size.small)
-    table.cell(t, 3, 17, str.tostring(str17, "#.0"), text_color=color.white, bgcolor=_rowColor(bull17), text_size=size.small)
-    table.cell(t, 4, 17, _flipStr(flip17),          text_color=color.white, bgcolor=_rowColor(bull17), text_size=size.small)
-
-    table.cell(t, 0, 18, "18",                     text_color=color.white, bgcolor=_rowColor(bull18), text_size=size.small)
-    table.cell(t, 1, 18, sym18,                     text_color=color.white, bgcolor=_rowColor(bull18), text_size=size.small)
-    table.cell(t, 2, 18, _stateStr(bull18),         text_color=color.white, bgcolor=_rowColor(bull18), text_size=size.small)
-    table.cell(t, 3, 18, str.tostring(str18, "#.0"), text_color=color.white, bgcolor=_rowColor(bull18), text_size=size.small)
-    table.cell(t, 4, 18, _flipStr(flip18),          text_color=color.white, bgcolor=_rowColor(bull18), text_size=size.small)
-
-    table.cell(t, 0, 19, "19",                     text_color=color.white, bgcolor=_rowColor(bull19), text_size=size.small)
-    table.cell(t, 1, 19, sym19,                     text_color=color.white, bgcolor=_rowColor(bull19), text_size=size.small)
-    table.cell(t, 2, 19, _stateStr(bull19),         text_color=color.white, bgcolor=_rowColor(bull19), text_size=size.small)
-    table.cell(t, 3, 19, str.tostring(str19, "#.0"), text_color=color.white, bgcolor=_rowColor(bull19), text_size=size.small)
-    table.cell(t, 4, 19, _flipStr(flip19),          text_color=color.white, bgcolor=_rowColor(bull19), text_size=size.small)
-
-    table.cell(t, 0, 20, "20",                     text_color=color.white, bgcolor=_rowColor(bull20), text_size=size.small)
-    table.cell(t, 1, 20, sym20,                     text_color=color.white, bgcolor=_rowColor(bull20), text_size=size.small)
-    table.cell(t, 2, 20, _stateStr(bull20),         text_color=color.white, bgcolor=_rowColor(bull20), text_size=size.small)
-    table.cell(t, 3, 20, str.tostring(str20, "#.0"), text_color=color.white, bgcolor=_rowColor(bull20), text_size=size.small)
-    table.cell(t, 4, 20, _flipStr(flip20),          text_color=color.white, bgcolor=_rowColor(bull20), text_size=size.small)
-
-    table.cell(t, 0, 21, "21",                     text_color=color.white, bgcolor=_rowColor(bull21), text_size=size.small)
-    table.cell(t, 1, 21, sym21,                     text_color=color.white, bgcolor=_rowColor(bull21), text_size=size.small)
-    table.cell(t, 2, 21, _stateStr(bull21),         text_color=color.white, bgcolor=_rowColor(bull21), text_size=size.small)
-    table.cell(t, 3, 21, str.tostring(str21, "#.0"), text_color=color.white, bgcolor=_rowColor(bull21), text_size=size.small)
-    table.cell(t, 4, 21, _flipStr(flip21),          text_color=color.white, bgcolor=_rowColor(bull21), text_size=size.small)
-
-    table.cell(t, 0, 22, "22",                     text_color=color.white, bgcolor=_rowColor(bull22), text_size=size.small)
-    table.cell(t, 1, 22, sym22,                     text_color=color.white, bgcolor=_rowColor(bull22), text_size=size.small)
-    table.cell(t, 2, 22, _stateStr(bull22),         text_color=color.white, bgcolor=_rowColor(bull22), text_size=size.small)
-    table.cell(t, 3, 22, str.tostring(str22, "#.0"), text_color=color.white, bgcolor=_rowColor(bull22), text_size=size.small)
-    table.cell(t, 4, 22, _flipStr(flip22),          text_color=color.white, bgcolor=_rowColor(bull22), text_size=size.small)
-
-    table.cell(t, 0, 23, "23",                     text_color=color.white, bgcolor=_rowColor(bull23), text_size=size.small)
-    table.cell(t, 1, 23, sym23,                     text_color=color.white, bgcolor=_rowColor(bull23), text_size=size.small)
-    table.cell(t, 2, 23, _stateStr(bull23),         text_color=color.white, bgcolor=_rowColor(bull23), text_size=size.small)
-    table.cell(t, 3, 23, str.tostring(str23, "#.0"), text_color=color.white, bgcolor=_rowColor(bull23), text_size=size.small)
-    table.cell(t, 4, 23, _flipStr(flip23),          text_color=color.white, bgcolor=_rowColor(bull23), text_size=size.small)
-
-    table.cell(t, 0, 24, "24",                     text_color=color.white, bgcolor=_rowColor(bull24), text_size=size.small)
-    table.cell(t, 1, 24, sym24,                     text_color=color.white, bgcolor=_rowColor(bull24), text_size=size.small)
-    table.cell(t, 2, 24, _stateStr(bull24),         text_color=color.white, bgcolor=_rowColor(bull24), text_size=size.small)
-    table.cell(t, 3, 24, str.tostring(str24, "#.0"), text_color=color.white, bgcolor=_rowColor(bull24), text_size=size.small)
-    table.cell(t, 4, 24, _flipStr(flip24),          text_color=color.white, bgcolor=_rowColor(bull24), text_size=size.small)
-
-    table.cell(t, 0, 25, "25",                     text_color=color.white, bgcolor=_rowColor(bull25), text_size=size.small)
-    table.cell(t, 1, 25, sym25,                     text_color=color.white, bgcolor=_rowColor(bull25), text_size=size.small)
-    table.cell(t, 2, 25, _stateStr(bull25),         text_color=color.white, bgcolor=_rowColor(bull25), text_size=size.small)
-    table.cell(t, 3, 25, str.tostring(str25, "#.0"), text_color=color.white, bgcolor=_rowColor(bull25), text_size=size.small)
-    table.cell(t, 4, 25, _flipStr(flip25),          text_color=color.white, bgcolor=_rowColor(bull25), text_size=size.small)
-
-    table.cell(t, 0, 26, "26",                     text_color=color.white, bgcolor=_rowColor(bull26), text_size=size.small)
-    table.cell(t, 1, 26, sym26,                     text_color=color.white, bgcolor=_rowColor(bull26), text_size=size.small)
-    table.cell(t, 2, 26, _stateStr(bull26),         text_color=color.white, bgcolor=_rowColor(bull26), text_size=size.small)
-    table.cell(t, 3, 26, str.tostring(str26, "#.0"), text_color=color.white, bgcolor=_rowColor(bull26), text_size=size.small)
-    table.cell(t, 4, 26, _flipStr(flip26),          text_color=color.white, bgcolor=_rowColor(bull26), text_size=size.small)
-
-    table.cell(t, 0, 27, "27",                     text_color=color.white, bgcolor=_rowColor(bull27), text_size=size.small)
-    table.cell(t, 1, 27, sym27,                     text_color=color.white, bgcolor=_rowColor(bull27), text_size=size.small)
-    table.cell(t, 2, 27, _stateStr(bull27),         text_color=color.white, bgcolor=_rowColor(bull27), text_size=size.small)
-    table.cell(t, 3, 27, str.tostring(str27, "#.0"), text_color=color.white, bgcolor=_rowColor(bull27), text_size=size.small)
-    table.cell(t, 4, 27, _flipStr(flip27),          text_color=color.white, bgcolor=_rowColor(bull27), text_size=size.small)
-
-    table.cell(t, 0, 28, "28",                     text_color=color.white, bgcolor=_rowColor(bull28), text_size=size.small)
-    table.cell(t, 1, 28, sym28,                     text_color=color.white, bgcolor=_rowColor(bull28), text_size=size.small)
-    table.cell(t, 2, 28, _stateStr(bull28),         text_color=color.white, bgcolor=_rowColor(bull28), text_size=size.small)
-    table.cell(t, 3, 28, str.tostring(str28, "#.0"), text_color=color.white, bgcolor=_rowColor(bull28), text_size=size.small)
-    table.cell(t, 4, 28, _flipStr(flip28),          text_color=color.white, bgcolor=_rowColor(bull28), text_size=size.small)
-
-    table.cell(t, 0, 29, "29",                     text_color=color.white, bgcolor=_rowColor(bull29), text_size=size.small)
-    table.cell(t, 1, 29, sym29,                     text_color=color.white, bgcolor=_rowColor(bull29), text_size=size.small)
-    table.cell(t, 2, 29, _stateStr(bull29),         text_color=color.white, bgcolor=_rowColor(bull29), text_size=size.small)
-    table.cell(t, 3, 29, str.tostring(str29, "#.0"), text_color=color.white, bgcolor=_rowColor(bull29), text_size=size.small)
-    table.cell(t, 4, 29, _flipStr(flip29),          text_color=color.white, bgcolor=_rowColor(bull29), text_size=size.small)
-
-    table.cell(t, 0, 30, "30",                     text_color=color.white, bgcolor=_rowColor(bull30), text_size=size.small)
-    table.cell(t, 1, 30, sym30,                     text_color=color.white, bgcolor=_rowColor(bull30), text_size=size.small)
-    table.cell(t, 2, 30, _stateStr(bull30),         text_color=color.white, bgcolor=_rowColor(bull30), text_size=size.small)
-    table.cell(t, 3, 30, str.tostring(str30, "#.0"), text_color=color.white, bgcolor=_rowColor(bull30), text_size=size.small)
-    table.cell(t, 4, 30, _flipStr(flip30),          text_color=color.white, bgcolor=_rowColor(bull30), text_size=size.small)
-
-// ============================================================================
-// Hidden dummy plot (required by Pine v6 for non-overlay indicators with no
-// visible plot output on the pane -- prevents "no output" warning)
-// ============================================================================
-plot(na, display=display.none)
-
-// ============================================================================
-// MANUAL ADD INSTRUCTIONS
-// 1. Open TradingView Pine Editor (Pine icon, bottom toolbar).
-// 2. Paste this entire file.
-// 3. Click "Save" then "Add to chart".
-// 4. Optionally move the pane below the price chart.
-// 5. Customize sym16-sym30 via the indicator settings dialog.
-// ============================================================================
+    for i = 0 to 29
+        sl   = array.get(slopes, i)
+        at   = array.get(atrs, i)
+        pv   = array.get(prevs, i)
+        bull = sl >= 0
+        strv = _strength(sl, at)
+        flip = (not na(pv)) and ((sl >= 0) != (pv >= 0)) and bar_index > smooth + slopeLen
+        rc   = bull ? color.new(color.teal, 75) : color.new(color.red, 75)
+        table.cell(t, 0, i + 1, str.tostring(i + 1),       text_color=color.white, bgcolor=rc, text_size=size.small)
+        table.cell(t, 1, i + 1, array.get(syms, i),        text_color=color.white, bgcolor=rc, text_size=size.small)
+        table.cell(t, 2, i + 1, bull ? "BULL" : "BEAR",    text_color=color.white, bgcolor=rc, text_size=size.small)
+        table.cell(t, 3, i + 1, str.tostring(strv, "#.0"), text_color=color.white, bgcolor=rc, text_size=size.small)
+        table.cell(t, 4, i + 1, flip ? "YES" : "-",        text_color=color.white, bgcolor=rc, text_size=size.small)
