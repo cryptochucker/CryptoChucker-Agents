@@ -32,7 +32,15 @@ _VALID_DECISIONS = {"BUY", "SKIP", "AVOID", "skip"}
 
 
 def _redact(text: str) -> str:
-    """Replace values that look like API secrets with [REDACTED]."""
+    """Replace values that look like API secrets with [REDACTED].
+
+    Two passes:
+    1. Prefix-anchored redaction: removes anything after a known secret prefix
+       (sk-, Bearer, Token, api_key=) up to the next whitespace or quote.
+    2. Bare-token redaction: replaces any remaining token that matches
+       _SECRET_RE (hex/base64 run >= 20 chars) with ***.  This catches raw
+       API keys that appear in a signal dict without a recognisable prefix.
+    """
     for prefix in _SECRET_PREFIXES:
         # redact anything after a known secret prefix up to whitespace/quote
         text = re.sub(
@@ -40,6 +48,9 @@ def _redact(text: str) -> str:
             prefix + "[REDACTED]",
             text,
         )
+    # Bare long token redaction (must come after prefix pass so prefixes
+    # themselves are not double-processed)
+    text = _SECRET_RE.sub("***", text)
     return text
 
 

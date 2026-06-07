@@ -11,7 +11,6 @@ import os
 import sys
 from datetime import datetime, timezone
 
-import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -155,44 +154,42 @@ def _load_scans(limit: int = 50) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def _make_money_line_df(symbol: str = "BTC/USDT", tf: str = "4h", n: int = 170) -> pd.DataFrame:
-    """Try to produce a real OHLCV + Money Line DataFrame.
+@st.cache_data(ttl=60)
+def _fetch_ohlcv(exchange: str, symbol: str, tf: str, limit: int = 200) -> pd.DataFrame | None:
+    """Fetch real OHLCV via DataFetcher, cached for 60 s.
 
-    Falls back to a synthetic series when the CCXT fetcher is unavailable or
-    the store has no recent data, so the chart always renders.
+    Returns None on any failure so callers can show an empty-state message
+    instead of crashing.
     """
-    # Try store signals to find a recent price reference
-    signals = _load_signals(limit=10)
-    start_price = 65_000.0
-    if signals:
-        prices = [s.get("price") for s in signals if s.get("price")]
-        if prices:
-            start_price = float(prices[0])
+    try:
+        from utils.data_fetcher import DataFetcher
 
-    # Generate synthetic OHLCV anchored to a known price
-    rng = np.random.default_rng(7)
-    drift = np.concatenate([
-        np.full(60, 0.0009), np.full(45, -0.0016), np.full(65, 0.0017),
-    ])[:n]
-    rets = drift + rng.normal(0, 0.010, n)
-    close = start_price * np.cumprod(1 + rets)
-    high = close * (1 + np.abs(rng.normal(0, 0.006, n)))
-    low = close * (1 - np.abs(rng.normal(0, 0.006, n)))
-    open_ = np.concatenate([[start_price], close[:-1]])
-    vol = rng.uniform(800, 2600, n) * (1 + 0.5 * np.abs(rets) / 0.01)
-    freq_map = {"1h": "1h", "4h": "4h", "1d": "1D", "1D": "1D", "15m": "15min"}
-    freq = freq_map.get(tf, "4h")
-    idx = pd.date_range(end=datetime.now(tz=timezone.utc), periods=n, freq=freq)
-    df = pd.DataFrame(
-        {"open": open_, "high": high, "low": low, "close": close, "volume": vol},
-        index=idx,
-    )
+        fetcher = DataFetcher(exchange=exchange.lower())
+        return fetcher.fetch_ohlcv(symbol, timeframe=tf, limit=limit)
+    except Exception:
+        return None
 
-    # Compute real Money Line
+
+def _make_money_line_df(
+    symbol: str = "BTC/USDT",
+    tf: str = "4h",
+    exchange: str = "blofin",
+    n: int = 200,
+) -> pd.DataFrame | None:
+    """Return a real OHLCV + Money Line DataFrame.
+
+    Fetches via DataFetcher (cached 60 s).  Returns None when the exchange
+    is unreachable or returns no data so the caller can render an empty state
+    instead of fabricated candles.
+    """
+    raw_df = _fetch_ohlcv(exchange, symbol, tf, limit=n)
+    if raw_df is None or raw_df.empty:
+        return None
+
     from agents.signal_agent import get_money_line
 
     ml = get_money_line(
-        df,
+        raw_df,
         length=cfg.signal.money_line_length,
         smooth=cfg.signal.smooth,
         slope_len=cfg.signal.slope_len,
@@ -243,6 +240,11 @@ def _candle_fig(df: pd.DataFrame, symbol: str) -> go.Figure:
 
 
 def _equity_fig(equity_rows: list[dict], initial: float = 10_000.0) -> go.Figure:
+    """Build an equity-curve chart from stored equity rows.
+
+    When there are no stored rows the chart shows a flat line at *initial*
+    (account balance).  No synthetic random data is ever generated.
+    """
     if equity_rows:
         eq_df = pd.DataFrame(equity_rows[::-1])
         try:
@@ -251,15 +253,11 @@ def _equity_fig(equity_rows: list[dict], initial: float = 10_000.0) -> go.Figure
             idx = pd.RangeIndex(len(eq_df))
         eq = eq_df["balance"].astype(float)
     else:
-        # Synthetic fallback
-        rng = np.random.default_rng(7)
-        n = 90
-        base = np.linspace(initial, initial * 1.248, n)
-        noise = np.cumsum(rng.normal(0, 60, n))
-        eq_arr = base + noise - noise[0]
-        eq_arr[40:52] -= np.linspace(0, 380, 12)
-        idx = pd.date_range(end=datetime.now(tz=timezone.utc), periods=n, freq="D")
-        eq = pd.Series(eq_arr)
+        # Empty store: show a flat reference line at the configured balance.
+        idx = pd.to_datetime(
+            [datetime.now(tz=timezone.utc).isoformat()]
+        )
+        eq = pd.Series([initial])
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -381,14 +379,23 @@ with tab_overview:
     c_chart, c_sigs = st.columns([0.68, 0.32])
 
     with c_chart:
-        chart_sym = sel_exchange.replace(" ", "") + ":BTC/USDT"
         st.markdown(f"#### BTC/USDT  {sel_tf}  Money Line")
-        try:
-            ml_df = _make_money_line_df("BTC/USDT", sel_tf)
-            st.plotly_chart(_candle_fig(ml_df, "BTC/USDT"), use_container_width=True,
-                            config={"displayModeBar": False})
-        except Exception as exc:
-            st.warning(f"Chart unavailable: {exc}")
+        ml_df = _make_money_line_df(
+            symbol="BTC/USDT",
+            tf=sel_tf,
+            exchange=cfg.exchange,
+        )
+        if ml_df is not None:
+            try:
+                st.plotly_chart(
+                    _candle_fig(ml_df, "BTC/USDT"),
+                    use_container_width=True,
+                    config={"displayModeBar": False},
+                )
+            except Exception as exc:
+                st.info(f"Chart render error: {exc}")
+        else:
+            st.info("No chart data available. Check exchange connectivity.")
 
     with c_sigs:
         st.markdown("#### Top signals")
@@ -460,36 +467,78 @@ with tab_scanner:
     min_strength = f2.slider("Min strength", 0, 100, int(cfg.scanner.min_strength))
     search_sym = f3.text_input("Search symbol", placeholder="e.g. SOL")
 
-    st.markdown("#### Scanner results")
+    # Prefer stored scan rows; fall back to signal rows when scans are absent.
+    if scans_raw:
+        st.markdown("#### Stored scans")
+        scan_df = pd.DataFrame(scans_raw)
+        # Rename common scan columns; tolerate varying schema from store
+        scan_df = scan_df.rename(columns={
+            "symbol": "Symbol", "tf": "TF", "state": "State",
+            "strength": "Strength", "price": "Price", "ts": "Timestamp",
+            "scanned_at": "Timestamp",
+        })
+        if "State" in scan_df.columns:
+            scan_df["State"] = (
+                scan_df["State"].astype(str).str.upper()
+                .str.replace("BULLISH", "BULL", regex=False)
+                .str.replace("BEARISH", "BEAR", regex=False)
+            )
+            if state_filter == "BULL only":
+                scan_df = scan_df[scan_df["State"] == "BULL"]
+            elif state_filter == "BEAR only":
+                scan_df = scan_df[scan_df["State"] == "BEAR"]
+        if min_strength > 0 and "Strength" in scan_df.columns:
+            scan_df = scan_df[scan_df["Strength"].fillna(0) >= min_strength]
+        if search_sym and "Symbol" in scan_df.columns:
+            scan_df = scan_df[scan_df["Symbol"].str.contains(search_sym.upper(), na=False)]
 
-    if signals_raw:
+        show_cols = [c for c in ["Symbol", "TF", "State", "Strength", "Price", "Timestamp"] if c in scan_df.columns]
+        if show_cols:
+            scan_df = scan_df[show_cols]
+        if "Strength" in scan_df.columns:
+            scan_df = scan_df.sort_values("Strength", ascending=False)
+
+        def _color_state(v: str) -> str:
+            return f"color:{BULL};font-weight:700" if "BULL" in str(v) else f"color:{BEAR};font-weight:700"
+
+        state_col = ["State"] if "State" in scan_df.columns else []
+        sty = scan_df.style.map(_color_state, subset=state_col)
+        st.dataframe(sty, use_container_width=True, hide_index=True, height=460)
+        st.caption(f"{len(scan_df)} scan rows shown")
+
+    elif signals_raw:
+        st.markdown("#### Scanner results (from signals)")
         sc_df = pd.DataFrame(signals_raw)
         sc_df = sc_df.rename(columns={
             "symbol": "Symbol", "tf": "TF", "state": "State",
             "strength": "Strength", "price": "Price", "ts": "Timestamp",
         })
-        # Normalise state labels
-        sc_df["State"] = sc_df["State"].str.upper().str.replace("BULLISH", "BULL").str.replace("BEARISH", "BEAR")
-        if state_filter == "BULL only":
-            sc_df = sc_df[sc_df["State"] == "BULL"]
-        elif state_filter == "BEAR only":
-            sc_df = sc_df[sc_df["State"] == "BEAR"]
+        if "State" in sc_df.columns:
+            sc_df["State"] = (
+                sc_df["State"].astype(str).str.upper()
+                .str.replace("BULLISH", "BULL", regex=False)
+                .str.replace("BEARISH", "BEAR", regex=False)
+            )
+            if state_filter == "BULL only":
+                sc_df = sc_df[sc_df["State"] == "BULL"]
+            elif state_filter == "BEAR only":
+                sc_df = sc_df[sc_df["State"] == "BEAR"]
         if min_strength > 0 and "Strength" in sc_df.columns:
             sc_df = sc_df[sc_df["Strength"].fillna(0) >= min_strength]
-        if search_sym:
+        if search_sym and "Symbol" in sc_df.columns:
             sc_df = sc_df[sc_df["Symbol"].str.contains(search_sym.upper(), na=False)]
 
         show_cols = [c for c in ["Symbol", "TF", "State", "Strength", "Price", "Timestamp"] if c in sc_df.columns]
         sc_df = sc_df[show_cols].sort_values("Strength", ascending=False) if "Strength" in sc_df.columns else sc_df[show_cols]
 
-        def _color_state(v: str) -> str:
+        def _color_state_sig(v: str) -> str:
             return f"color:{BULL};font-weight:700" if "BULL" in str(v) else f"color:{BEAR};font-weight:700"
 
-        sty = sc_df.style.map(_color_state, subset=["State"] if "State" in sc_df.columns else [])
+        sty = sc_df.style.map(_color_state_sig, subset=["State"] if "State" in sc_df.columns else [])
         st.dataframe(sty, use_container_width=True, hide_index=True, height=460)
         st.caption(f"{len(sc_df)} rows shown")
     else:
-        st.info("Scanner has not run yet. No signal data in the store.")
+        st.info("Scanner has not run yet. No scan or signal data in the store.")
 
 # ---------------------------------------------------------------------------
 # Backtest tab
@@ -509,16 +558,20 @@ with tab_backtest:
                 try:
                     from agents.backtester import run_backtest
 
-                    bt_df = _make_money_line_df(bt_sym, bt_tf, n=300)
-                    result = run_backtest(
-                        bt_df,
-                        initial_capital=cfg.risk.account_balance,
-                        freq=bt_tf,
-                        money_line_length=bt_ml,
-                        smooth=bt_smooth,
-                        slope_len=cfg.signal.slope_len,
-                    )
-                    st.session_state["bt_result"] = result
+                    bt_raw = _fetch_ohlcv(cfg.exchange, bt_sym, bt_tf, limit=300)
+                    if bt_raw is None or bt_raw.empty:
+                        st.error("No OHLCV data available for the selected symbol/timeframe.")
+                        st.session_state.pop("bt_result", None)
+                    else:
+                        result = run_backtest(
+                            bt_raw,
+                            initial_capital=cfg.risk.account_balance,
+                            freq=bt_tf,
+                            money_line_length=bt_ml,
+                            smooth=bt_smooth,
+                            slope_len=cfg.signal.slope_len,
+                        )
+                        st.session_state["bt_result"] = result
                 except Exception as exc:
                     st.error(f"Backtest error: {exc}")
                     st.session_state.pop("bt_result", None)

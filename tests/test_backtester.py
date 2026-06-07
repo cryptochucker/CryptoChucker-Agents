@@ -202,3 +202,81 @@ def test_grid_search_single_combo(synthetic_ohlcv):
 def test_grid_search_all_sharpes_finite(synthetic_ohlcv, small_param_grid):
     df = grid_search(synthetic_ohlcv, small_param_grid)
     assert df["sharpe"].apply(math.isfinite).all()
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM 6 -- Deterministic mark-to-market fixture (BLOCKING 1 regression)
+# ---------------------------------------------------------------------------
+# Uses `synthetic_ohlcv` (200 bars, bull-run then bear, seed=42) with
+# money_line_length=3, smooth=5, slope_len=1 which reliably generates two
+# complete round-trip trades (verified in-code).
+#
+# The first trade enters near bar 99 and exits near bar 101 but the MTM
+# equity dips to ~9931 intra-bar-99 before the exit fires, yielding
+# max_drawdown ~-3.3%.  The old realised-only engine would show 0 drawdown
+# while the position was open.
+# ---------------------------------------------------------------------------
+
+_MTM_KWARGS = dict(money_line_length=3, smooth=5, slope_len=1, freq="4h")
+
+
+def test_mtm_max_drawdown_captures_intra_trade_dip(synthetic_ohlcv):
+    """max_drawdown must reflect the intra-trade price dip, not just closed trades.
+
+    With mark-to-market equity the dip below entry price while in a position
+    must produce a negative drawdown.  The old realised-only engine would
+    show drawdown == 0 while a position was open.
+    """
+    r = run_backtest(synthetic_ohlcv, initial_capital=10_000.0, **_MTM_KWARGS)
+    # Verified empirically: drawdown reaches ~ -3.3% with this seed/params.
+    assert r.max_drawdown < -0.02, (
+        f"Expected max_drawdown < -0.02 (intra-trade dip captured), got {r.max_drawdown:.4f}"
+    )
+
+
+def test_mtm_completed_trades_exist(synthetic_ohlcv):
+    """At least one complete round-trip trade must fire on this fixture."""
+    r = run_backtest(synthetic_ohlcv, initial_capital=10_000.0, **_MTM_KWARGS)
+    assert len(r.trades) >= 1, "Expected at least one completed trade"
+
+
+def test_mtm_equity_curve_moves_intra_trade(synthetic_ohlcv):
+    """The equity series must contain at least 3 distinct values (not flat)."""
+    r = run_backtest(synthetic_ohlcv, initial_capital=10_000.0, **_MTM_KWARGS)
+    unique_values = r.equity_curve.nunique()
+    assert unique_values >= 3, (
+        f"Equity curve has only {unique_values} unique values -- looks like realised-only tracking"
+    )
+
+
+def test_mtm_sharpe_is_finite(synthetic_ohlcv):
+    """Sharpe must be a finite float (not NaN/inf) on the MTM equity curve."""
+    r = run_backtest(synthetic_ohlcv, initial_capital=10_000.0, **_MTM_KWARGS)
+    assert math.isfinite(r.sharpe), f"Sharpe is not finite: {r.sharpe}"
+
+
+def test_mtm_annualisation_crypto_4h():
+    """4h bars on a 24/7 crypto market -> periods_per_year = 8760/4 = 2190."""
+    from agents.backtester import _annualisation_factor
+
+    factor = _annualisation_factor("4h")
+    expected = math.sqrt(365 * 24 / 4)  # sqrt(2190)
+    assert factor == pytest.approx(expected, rel=1e-6)
+
+
+def test_mtm_annualisation_crypto_1d():
+    """1d bars -> periods_per_year = 365."""
+    from agents.backtester import _annualisation_factor
+
+    factor = _annualisation_factor("1d")
+    expected = math.sqrt(365)
+    assert factor == pytest.approx(expected, rel=1e-6)
+
+
+def test_mtm_annualisation_crypto_15m():
+    """15m bars -> periods_per_year = 8760/0.25 = 35040."""
+    from agents.backtester import _annualisation_factor
+
+    factor = _annualisation_factor("15m")
+    expected = math.sqrt(365 * 24 / 0.25)
+    assert factor == pytest.approx(expected, rel=1e-6)

@@ -204,3 +204,60 @@ def test_redact_leaves_short_strings_intact():
     text = "price=12345"
     result = _redact(text)
     assert result == text
+
+
+def test_redact_bare_40char_hex_token():
+    """BLOCKING 3 -- _SECRET_RE must catch bare long tokens without a prefix."""
+    bare_secret = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"  # 40-char hex
+    assert len(bare_secret) == 40
+    signal = {"state": "BULLISH", "api_token": bare_secret}
+    # Build the prompt text the same way _build_prompt would
+    import json
+    prompt_text = f"Signal: {json.dumps(signal)}"
+    redacted = _redact(prompt_text)
+    assert bare_secret not in redacted, (
+        "Bare 40-char hex token should be redacted by _SECRET_RE"
+    )
+    assert "***" in redacted or "[REDACTED]" in redacted
+
+
+def test_redact_bare_token_via_validate(enabled_anthropic_cfg):
+    """End-to-end: bare secret in signal must be redacted before reaching provider."""
+    from unittest.mock import patch as _patch
+
+    bare_secret = "deadbeef1234567890abcdef1234567890abcdef"
+    assert len(bare_secret) == 40
+
+    captured: list[str] = []
+
+    def fake_anthropic(prompt: str) -> str:
+        captured.append(prompt)
+        return '{"decision": "SKIP", "confidence": 0.5, "reason": "test"}'
+
+    signal_with_secret = {**SAMPLE_SIGNAL, "raw_key": bare_secret}
+    with _patch("utils.llm_copilot._call_anthropic", side_effect=fake_anthropic):
+        validate(signal_with_secret, enabled_anthropic_cfg)
+
+    assert captured, "Provider was not called"
+    assert bare_secret not in captured[0], (
+        "Bare secret reached the provider -- _SECRET_RE not applied in _redact()"
+    )
+
+
+# ---------------------------------------------------------------------------
+# LOW 7 -- no SDK import when copilot is disabled
+# ---------------------------------------------------------------------------
+
+
+def test_no_sdk_import_when_disabled(disabled_cfg):
+    """Calling validate() with copilot disabled must not import anthropic or openai."""
+    import sys
+
+    # Remove SDKs from sys.modules if they happen to be cached
+    for mod in ("anthropic", "openai"):
+        sys.modules.pop(mod, None)
+
+    validate(SAMPLE_SIGNAL, disabled_cfg)
+
+    assert "anthropic" not in sys.modules, "anthropic was imported despite copilot being disabled"
+    assert "openai" not in sys.modules, "openai was imported despite copilot being disabled"

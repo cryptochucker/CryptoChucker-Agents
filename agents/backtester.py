@@ -58,23 +58,33 @@ class BacktestResult:
 # Core backtest engine
 # ---------------------------------------------------------------------------
 
-_TRADING_DAYS_PER_YEAR = 252
+_CRYPTO_HOURS_PER_YEAR = 365 * 24  # 8 760 h/yr; crypto trades 24/7
 _RISK_FREE = 0.0  # annualised; can be parameterised later
+
+# Hours per bar for each supported timeframe (case-insensitive match via .lower())
+_HOURS_PER_BAR: dict[str, float] = {
+    "15m": 0.25,
+    "30m": 0.50,
+    "1h": 1.0,
+    "2h": 2.0,
+    "4h": 4.0,
+    "6h": 6.0,
+    "12h": 12.0,
+    "1d": 24.0,
+    "1w": 168.0,
+}
 
 
 def _annualisation_factor(freq: str) -> float:
-    """Return sqrt(periods_per_year) for Sharpe/Sortino annualisation."""
-    freq = freq.lower()
-    mapping = {
-        "1m": np.sqrt(252 * 390),
-        "5m": np.sqrt(252 * 78),
-        "15m": np.sqrt(252 * 26),
-        "1h": np.sqrt(252 * 6.5),
-        "4h": np.sqrt(252 * 1.625),
-        "1d": np.sqrt(252),
-        "1w": np.sqrt(52),
-    }
-    return mapping.get(freq, np.sqrt(252))
+    """Return sqrt(periods_per_year) for Sharpe/Sortino annualisation.
+
+    Uses 24/7 crypto calendar: 365 * 24 hours per year divided by the
+    number of hours in one bar.  Falls back to the 4h default when the
+    timeframe string is not recognised.
+    """
+    hours = _HOURS_PER_BAR.get(freq.lower(), _HOURS_PER_BAR.get(freq, 4.0))
+    periods_per_year = _CRYPTO_HOURS_PER_YEAR / hours
+    return np.sqrt(periods_per_year)
 
 
 def run_backtest(
@@ -118,45 +128,69 @@ def run_backtest(
     bull_flip = ml_df["flip_detected"] & (ml_df["state"] == "BULLISH")
     bear_flip = ml_df["flip_detected"] & (ml_df["state"] == "BEARISH")
 
-    # Simulate one trade at a time (long only)
-    equity = initial_capital
-    equity_series: list[float] = [equity]
-    ts_index: list[Any] = [ml_df.index[0]]
+    # ------------------------------------------------------------------
+    # Mark-to-market simulation (BLOCKING 1)
+    # ------------------------------------------------------------------
+    # State tracked bar-by-bar:
+    #   cash       -- uninvested cash
+    #   position_qty -- number of units held (0 when flat)
+    # Every bar: equity[i] = cash + position_qty * close[i]
+    # Entry:  deduct cost + entry fee from cash, record position_qty
+    # Exit:   realise proceeds - exit fee into cash, zero position_qty
+    # ------------------------------------------------------------------
+    FEE = 0.001  # symmetric taker fee (0.1 %); no external cfg supplied yet
+
+    cash = float(initial_capital)
+    position_qty = 0.0
+    entry_price = 0.0
+    entry_idx: int | None = None
+    in_trade = False
 
     trade_records: list[dict] = []
-    in_trade = False
-    entry_price = 0.0
-    entry_idx = None
-
     closes = ml_df["close"].values
     dates = ml_df.index
 
-    for i in range(1, len(ml_df)):
-        if not in_trade and bull_flip.iloc[i]:
-            # Enter long at the close of the flip bar
-            in_trade = True
-            entry_price = closes[i]
-            entry_idx = i
+    equity_series: list[float] = []
+    ts_index: list[Any] = []
 
-        elif in_trade and bear_flip.iloc[i]:
-            # Exit long at the close of the flip bar
-            exit_price = closes[i]
-            ret = (exit_price - entry_price) / entry_price
-            pnl = equity * ret
-            equity += pnl
-            trade_records.append(
-                {
-                    "entry_ts": dates[entry_idx],
-                    "exit_ts": dates[i],
-                    "entry_price": entry_price,
-                    "exit_price": exit_price,
-                    "return": ret,
-                    "pnl": pnl,
-                }
-            )
-            in_trade = False
+    for i in range(len(ml_df)):
+        close_i = float(closes[i])
 
-        equity_series.append(equity)
+        if i > 0:  # skip entry/exit signals on the very first bar
+            if not in_trade and bull_flip.iloc[i]:
+                # Entry: invest all cash; taker fee reduces units acquired
+                fee_paid = cash * FEE
+                spend = cash - fee_paid
+                position_qty = spend / close_i
+                cash = 0.0
+                in_trade = True
+                entry_price = close_i
+                entry_idx = i
+
+            elif in_trade and bear_flip.iloc[i]:
+                # Exit: sell all units; deduct taker fee
+                gross = position_qty * close_i
+                fee_paid = gross * FEE
+                net_proceeds = gross - fee_paid
+                pnl = net_proceeds - (position_qty * entry_price)
+                ret = (close_i - entry_price) / entry_price
+                trade_records.append(
+                    {
+                        "entry_ts": dates[entry_idx],  # type: ignore[index]
+                        "exit_ts": dates[i],
+                        "entry_price": entry_price,
+                        "exit_price": close_i,
+                        "return": ret,
+                        "pnl": pnl,
+                    }
+                )
+                cash = net_proceeds
+                position_qty = 0.0
+                in_trade = False
+
+        # Mark-to-market equity at this bar's close
+        equity_i = cash + position_qty * close_i
+        equity_series.append(equity_i)
         ts_index.append(dates[i])
 
     equity_curve = pd.Series(equity_series, index=ts_index, name="equity")
@@ -169,17 +203,19 @@ def run_backtest(
 
     ann = _annualisation_factor(freq)
 
+    # Sharpe = (mean_return - rf_per_period) / std * sqrt(periods_per_year)
+    # rf_per_period = 0.0 since _RISK_FREE is 0; guard zero std
     if period_returns.std(ddof=1) == 0:
         sharpe = 0.0
     else:
-        sharpe = float((period_returns.mean() - _RISK_FREE / (_annualisation_factor(freq) ** 2)) / period_returns.std(ddof=1) * ann)
+        sharpe = float(period_returns.mean() / period_returns.std(ddof=1) * ann)
 
     downside = period_returns[period_returns < _RISK_FREE]
-    downside_std = downside.std(ddof=1) if len(downside) > 1 else 0.0
+    downside_std = float(downside.std(ddof=1)) if len(downside) > 1 else 0.0
     if downside_std == 0:
         sortino = 0.0
     else:
-        sortino = float((period_returns.mean() - _RISK_FREE / (_annualisation_factor(freq) ** 2)) / downside_std * ann)
+        sortino = float(period_returns.mean() / downside_std * ann)
 
     # Max drawdown (as a negative fraction)
     roll_max = equity_curve.cummax()
