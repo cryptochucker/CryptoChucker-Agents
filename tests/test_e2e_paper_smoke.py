@@ -523,3 +523,163 @@ def test_e2e_alert_real_transport_telegram(tmp_path, monkeypatch):
     # Smoke: signal and equity persisted.
     assert len(store.load_signals()) >= 1, "No signal rows persisted"
     assert len(store.load_equity()) >= 1, "No equity rows persisted"
+
+
+# ---------------------------------------------------------------------------
+# Gate 6: dip filter and equity snapshot correctness
+# ---------------------------------------------------------------------------
+
+
+def _make_dip_filter_cfg(tmp_path: Path) -> Config:
+    """Paper config with use_dip_filter=True so the dip branch runs."""
+    return Config(
+        exchange="blofin",
+        paper_trading=True,
+        persistence={"sqlite_path": str(tmp_path / "dip_filter.db")},
+        data={"primary_timeframe": "4h", "ohlcv_limit": 300},
+        scanner={
+            "interval_minutes": 5,
+            "min_strength": 55,
+            "rank_top_n": 10,
+            "volume_surge_mult": 2.0,
+            "use_vwap_filter": True,
+            "vwap_length": 20,
+        },
+        signal={
+            "money_line_length": 8,
+            "smooth": 14,
+            "slope_len": 3,
+            "use_rsi_filter": False,
+            "use_adx_filter": False,
+        },
+        executor={
+            "use_dip_filter": True,   # <- enabled for this test
+            "trailing_stop_pct": 0.03,
+            "profit_target_pct": 0.06,
+            "max_hold_hours": 48,
+        },
+        risk={
+            "account_balance": 10000,
+            "risk_pct": 0.01,
+            "max_exposure_pct": 0.15,
+            "max_trades_per_day": 10,
+            "max_consecutive_losses": 4,
+            "max_drawdown_pct": 0.20,
+        },
+        fees={"blofin": {"maker": 0.0002, "taker": 0.0006}},
+        alerts={
+            "telegram": False,
+            "discord": False,
+            "email": False,
+            "send_chart_image": False,
+        },
+        llm_copilot={"enabled": False},
+    )
+
+
+def test_e2e_dip_filter_receives_df(tmp_path):
+    """Gate 6 BLOCKING 1: executor.on_signal is called WITH a non-None df.
+
+    With use_dip_filter=True the orchestrator must thread the OHLCV DataFrame
+    through run_once() to on_signal so the dip branch can actually execute.
+    This test monkeypatches on_signal to capture the df argument and asserts
+    it is a non-None DataFrame.
+    """
+    from agents.executor_agent import Executor  # noqa: PLC0415
+    from main import build_app  # noqa: PLC0415
+
+    cfg = _make_dip_filter_cfg(tmp_path)
+    store = Store(str(tmp_path / "dip_filter.db"))
+    store.init()
+    mock_alert = MagicMock()
+
+    captured_dfs: list = []
+
+    original_on_signal = Executor.on_signal
+
+    def spy_on_signal(self, event, df=None):  # noqa: ANN001
+        captured_dfs.append(df)
+        original_on_signal(self, event, df=df)
+
+    with patch.object(Executor, "on_signal", spy_on_signal):
+        build_app(cfg, fetcher=_fixture_fetcher, store=store, alert_agent=mock_alert).run_once()
+
+    # The orchestrator must have called on_signal at least once with a real df.
+    assert len(captured_dfs) >= 1, (
+        "on_signal was never called -- no signals were produced by the fixture"
+    )
+    assert any(df is not None and isinstance(df, pd.DataFrame) for df in captured_dfs), (
+        "on_signal was called but df was None every time; "
+        "run_once() is not threading the OHLCV DataFrame to the executor"
+    )
+
+
+def test_e2e_equity_snapshot_reflects_real_pnl(tmp_path):
+    """Gate 6 BLOCKING 2: cycle equity snapshot equals account_balance + realized + unrealized.
+
+    After a completed trade the equity row written by run_once() must NOT equal
+    the bare account_balance constant; it must incorporate the realized PnL from
+    that trade.
+
+    Strategy:
+    - First run_once() to open a position (use_dip_filter=False to guarantee entry).
+    - Manually close the position via the store so a realized PnL row exists.
+    - Second run_once() to trigger the equity snapshot with that realized PnL.
+    - Assert the latest equity row != account_balance.
+    - Assert latest equity == account_balance + sum(pnl for closed trades with pnl set).
+    """
+    from main import build_app  # noqa: PLC0415
+
+    cfg = _make_paper_cfg(tmp_path)          # use_dip_filter=False -> entry guaranteed
+    store = Store(str(tmp_path / "equity_pnl.db"))
+    store.init()
+    mock_alert = MagicMock()
+
+    account_balance = cfg.risk.account_balance
+
+    # First cycle: open a position.
+    app = build_app(cfg, fetcher=_fixture_fetcher, store=store, alert_agent=mock_alert)
+    app.run_once()
+
+    # Confirm a trade was written (may be buy-side only at this point).
+    all_trades_after_first = store.load_trades()
+    assert len(all_trades_after_first) >= 1, "Expected at least one trade after first run_once()"
+
+    # Inject a closed sell-side trade row with a known PnL so we can assert the math.
+    known_pnl = 123.45
+    store.save_trade({
+        "symbol": "BTC/USDT",
+        "mode": "paper",
+        "side": "sell",
+        "entry_price": 50000.0,
+        "exit_price": 50500.0,
+        "qty": 0.01,
+        "pnl": known_pnl,
+        "fee": 0.03,
+        "opened_at": "2024-01-01 00:00:00",
+    })
+
+    # Second cycle: run_once() should compute equity using all trade pnl rows.
+    app.run_once()
+
+    # Fetch the newest equity row (load_equity returns newest-first).
+    equity_rows = store.load_equity()
+    assert len(equity_rows) >= 1, "No equity rows after second run_once()"
+    latest_equity = equity_rows[0]["balance"]
+
+    # Compute expected: account_balance + sum of all non-None pnl rows.
+    all_trades = store.load_trades()
+    realized_pnl = sum(t["pnl"] for t in all_trades if t.get("pnl") is not None)
+
+    # The snapshot must reflect realized PnL (unrealized may be 0 or non-zero
+    # depending on open positions at snapshot time, so we assert >= realized).
+    expected_minimum = account_balance + realized_pnl
+
+    assert latest_equity != account_balance, (
+        f"Equity snapshot equals bare account_balance ({account_balance}); "
+        "run_once() is not incorporating realized PnL into the snapshot"
+    )
+    assert abs(latest_equity - expected_minimum) < 1.0 or latest_equity >= expected_minimum, (
+        f"Equity {latest_equity} does not reflect account_balance ({account_balance}) "
+        f"+ realized_pnl ({realized_pnl}). Expected ~{expected_minimum}"
+    )

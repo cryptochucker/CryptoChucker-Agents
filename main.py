@@ -22,6 +22,8 @@ import signal
 import sys
 from typing import Any, Callable
 
+import pandas as pd
+
 from utils.config_schema import Config, load_config
 from utils.logging_config import setup_logging
 from utils.store import Store
@@ -79,6 +81,7 @@ class _App:
         executor: Any,
         store: Store,
         alert_agent: Any,
+        fetcher: Callable,
         llm_copilot_enabled: bool = False,
     ) -> None:
         self._cfg = cfg
@@ -86,6 +89,7 @@ class _App:
         self._executor = executor
         self._store = store
         self._alert_agent = alert_agent
+        self._fetcher = fetcher
         self._llm_copilot_enabled = llm_copilot_enabled
 
     # ------------------------------------------------------------------
@@ -102,17 +106,22 @@ class _App:
         3. For each ranked SignalEvent:
            a. Persist the signal row.
            b. (Optional) LLM co-pilot validation gate.
-           c. Run the Executor (paper fill / exit logic).
-           d. Send an alert (per-agent isolated).
-        4. Record an equity snapshot row.
+           c. Fetch fresh OHLCV for this symbol so the dip filter can run.
+           d. Run the Executor with the OHLCV df (paper fill / exit logic).
+           e. Send an alert (per-agent isolated).
+        4. Record a cycle equity snapshot that reflects real PnL.
 
         Any exception at any step is caught and logged; the cycle does not abort.
         """
         logger.info("run_once: starting cycle")
 
+        cfg = self._cfg
+        tf = cfg.data.primary_timeframe
+        limit = cfg.data.ohlcv_limit
+
         # 1. Watchlist
         try:
-            symbols = _load_watchlist(self._cfg)
+            symbols = _load_watchlist(cfg)
         except Exception as exc:  # noqa: BLE001
             logger.error("run_once: watchlist load failed: %s", exc)
             symbols = list(_DEFAULT_WATCHLIST)
@@ -124,6 +133,10 @@ class _App:
         except Exception as exc:  # noqa: BLE001
             logger.error("run_once: scanner failed: %s", exc)
             events = []
+
+        # Track the most recently fetched df per symbol so the equity calculation
+        # can use a fresh price without an extra network round-trip.
+        latest_dfs: dict[str, pd.DataFrame] = {}
 
         # 3. Process each event
         for event in events:
@@ -152,7 +165,7 @@ class _App:
                         "flip": event.flip,
                         "price": event.price,
                     }
-                    verdict = validate(sig_dict, self._cfg)
+                    verdict = validate(sig_dict, cfg)
                     if verdict.get("decision", "SKIP").upper() == "AVOID":
                         logger.info(
                             "run_once: LLM co-pilot AVOID for %s (reason: %s)",
@@ -163,21 +176,62 @@ class _App:
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("run_once: LLM co-pilot error for %s: %s", event.symbol, exc)
 
-            # 3c. Executor
+            # 3c. Fetch OHLCV so the executor's dip filter can run.
+            # The scanner already fetched data for this symbol, but it does not
+            # expose the raw DataFrames through its public API.  A small extra
+            # fetch per ranked event is acceptable (events are top-N).
+            event_df: pd.DataFrame | None = None
             try:
-                self._executor.on_signal(event)
+                event_df = self._fetcher(event.symbol, tf, limit)
+                latest_dfs[event.symbol] = event_df
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "run_once: OHLCV fetch failed for %s (dip filter will be skipped): %s",
+                    event.symbol,
+                    exc,
+                )
+
+            # 3d. Executor -- pass the df so the dip filter actually runs.
+            try:
+                self._executor.on_signal(event, df=event_df)
             except Exception as exc:  # noqa: BLE001
                 logger.error("run_once: executor failed for %s: %s", event.symbol, exc)
 
-            # 3d. Alert
+            # 3e. Alert
             try:
                 self._alert_agent.send(event)
             except Exception as exc:  # noqa: BLE001
                 logger.error("run_once: alert failed for %s: %s", event.symbol, exc)
 
-        # 4. Equity snapshot (always, even if no events)
+        # 4. Equity snapshot (always, even if no events).
+        # Compute CURRENT equity = account_balance + realized_pnl + unrealized_pnl
+        # so the dashboard reflects real PnL rather than the bare config constant.
         try:
-            self._store.save_equity(self._cfg.risk.account_balance)
+            account_balance = cfg.risk.account_balance
+
+            # Realized PnL: sum pnl column over all closed trade rows (buy-side rows
+            # have pnl=None; sell-side rows carry the net figure).
+            realized_pnl = sum(
+                t["pnl"] for t in self._store.load_trades() if t.get("pnl") is not None
+            )
+
+            # Unrealized PnL: for each open position use the latest close from this
+            # cycle's fetched df when available; otherwise contribute 0.
+            unrealized_pnl = 0.0
+            open_positions = self._store.load_positions(status="open")
+            for pos in open_positions:
+                sym = pos.get("symbol")
+                entry_price = pos.get("entry_price") or 0.0
+                qty = pos.get("qty") or 0.0
+                if sym and sym in latest_dfs:
+                    try:
+                        last_close = float(latest_dfs[sym]["close"].iloc[-1])
+                        unrealized_pnl += (last_close - entry_price) * qty
+                    except Exception:  # noqa: BLE001
+                        pass  # no price available; contribute 0
+
+            cycle_equity = account_balance + realized_pnl + unrealized_pnl
+            self._store.save_equity(cycle_equity)
         except Exception as exc:  # noqa: BLE001
             logger.error("run_once: equity snapshot failed: %s", exc)
 
@@ -258,6 +312,7 @@ def build_app(
         executor=executor,
         store=store,
         alert_agent=alert_agent,
+        fetcher=fetcher,
         llm_copilot_enabled=llm_enabled,
     )
 
