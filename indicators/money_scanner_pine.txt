@@ -44,50 +44,21 @@ sym12 = input.symbol("BLOFIN:LTCUSDT.P",  "Symbol 12",  group="Symbols")
 sym13 = input.symbol("BLOFIN:UNIUSDT.P",  "Symbol 13",  group="Symbols")
 sym14 = input.symbol("BLOFIN:ATOMUSDT.P", "Symbol 14",  group="Symbols")
 sym15 = input.symbol("BLOFIN:NEARUSDT.P", "Symbol 15",  group="Symbols")
-sym16 = input.symbol("",                  "Symbol 16",  group="Symbols")
-sym17 = input.symbol("",                  "Symbol 17",  group="Symbols")
-sym18 = input.symbol("",                  "Symbol 18",  group="Symbols")
-sym19 = input.symbol("",                  "Symbol 19",  group="Symbols")
-sym20 = input.symbol("",                  "Symbol 20",  group="Symbols")
-sym21 = input.symbol("",                  "Symbol 21",  group="Symbols")
-sym22 = input.symbol("",                  "Symbol 22",  group="Symbols")
-sym23 = input.symbol("",                  "Symbol 23",  group="Symbols")
-sym24 = input.symbol("",                  "Symbol 24",  group="Symbols")
-sym25 = input.symbol("",                  "Symbol 25",  group="Symbols")
-sym26 = input.symbol("",                  "Symbol 26",  group="Symbols")
-sym27 = input.symbol("",                  "Symbol 27",  group="Symbols")
-sym28 = input.symbol("",                  "Symbol 28",  group="Symbols")
-sym29 = input.symbol("",                  "Symbol 29",  group="Symbols")
-sym30 = input.symbol("",                  "Symbol 30",  group="Symbols")
-
-// ---- Helper function: compute Money Line state for one symbol --------------
-// Returns [bull (bool), strength (float 0-100), flip (bool)] via a 3-tuple
-// retrieved with request.security.
-//
-// Pine v6 does not support function-returning-tuple inside request.security
-// directly, so we use a separate request.security call per output value.
-// All three share the same symbol and timeframe so they count as ONE security
-// call against the budget per symbol (TradingView deduplicates same-sym calls).
-
-_ml_bull(sym) =>
-    [_tp, _vol, _ml_prev] = request.security(sym, timeframe.period,
-        [(high + low + close) / 3.0,
-         volume,
-         ta.ema(math.sum((high + low + close) / 3.0 * volume, length) /
-                math.sum(volume, length), smooth)[1]],
-        lookahead=barmerge.lookahead_off)
-    _vwma_cur = math.sum(_tp * _vol, length) / math.sum(_vol, length)
-    _ml_cur   = ta.ema(_vwma_cur, smooth)
-    _slope    = ta.sma(ta.change(_ml_cur), slopeLen)
-    _bull     = _slope >= 0
-    // Strength proxy
-    _atr_val  = ta.atr(14)
-    _snorm    = _atr_val != 0 ? math.abs(_slope) / _atr_val : 0.0
-    _strength = math.min(100.0, 100.0 * math.tanh(_snorm * 8.0))
-    // Warmup guard (mirrors money_line_pine.txt)
-    _warmup   = not na(_slope[1]) and bar_index > smooth + slopeLen
-    _flip     = _warmup and (_bull != _bull[1])
-    [_bull, _strength, _flip]
+sym16 = input.symbol("BLOFIN:SUIUSDT.P",  "Symbol 16",  group="Symbols")
+sym17 = input.symbol("BLOFIN:INJUSDT.P",  "Symbol 17",  group="Symbols")
+sym18 = input.symbol("BLOFIN:TIAUSDT.P",  "Symbol 18",  group="Symbols")
+sym19 = input.symbol("BLOFIN:SEIUSDT.P",  "Symbol 19",  group="Symbols")
+sym20 = input.symbol("BLOFIN:ARBUSDT.P",  "Symbol 20",  group="Symbols")
+sym21 = input.symbol("BLOFIN:OPUSDT.P",   "Symbol 21",  group="Symbols")
+sym22 = input.symbol("BLOFIN:APTUSDT.P",  "Symbol 22",  group="Symbols")
+sym23 = input.symbol("BLOFIN:WIFUSDT.P",  "Symbol 23",  group="Symbols")
+sym24 = input.symbol("BLOFIN:PEPEUSDT.P", "Symbol 24",  group="Symbols")
+sym25 = input.symbol("BLOFIN:RNDRUSDT.P", "Symbol 25",  group="Symbols")
+sym26 = input.symbol("BLOFIN:FILUSDT.P",  "Symbol 26",  group="Symbols")
+sym27 = input.symbol("BLOFIN:UNIUSDT.P",  "Symbol 27",  group="Symbols")
+sym28 = input.symbol("BLOFIN:AAVEUSDT.P", "Symbol 28",  group="Symbols")
+sym29 = input.symbol("BLOFIN:TONUSDT.P",  "Symbol 29",  group="Symbols")
+sym30 = input.symbol("BLOFIN:JUPUSDT.P",  "Symbol 30",  group="Symbols")
 
 // ---- Fetch state for all 30 symbols ----------------------------------------
 // Each request.security group (bull + strength + flip) is logically ONE call
