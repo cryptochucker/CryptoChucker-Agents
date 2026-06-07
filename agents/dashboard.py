@@ -171,6 +171,21 @@ def _load_scans(limit: int = 50) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+def _normalize_symbol(raw: str, exchange: str = "blofin") -> str:
+    """Normalize a user-typed ticker to a CCXT-style symbol string.
+
+    Rules:
+    - Strip whitespace; uppercase the input.
+    - If the input already contains "/", use it verbatim (e.g. "SOL/USDT:USDT").
+    - Otherwise append "/USDT:USDT" for blofin (default) or "/USDT" for others.
+    """
+    s = raw.strip().upper()
+    if "/" in s:
+        return s
+    suffix = "/USDT:USDT" if exchange.lower() == "blofin" else "/USDT"
+    return s + suffix
+
+
 @st.cache_data(ttl=60)
 def _fetch_ohlcv(exchange: str, symbol: str, tf: str, limit: int = 200) -> pd.DataFrame | None:
     """Fetch real OHLCV via DataFetcher, cached for 60 s.
@@ -396,28 +411,82 @@ with tab_overview:
     c_chart, c_sigs = st.columns([0.68, 0.32])
 
     with c_chart:
-        st.markdown(f"#### BTC/USDT  {sel_tf}  Money Line")
-        if st.button("Load live chart", key="load_live_chart"):
-            st.session_state["live_chart_requested"] = True
-        if st.session_state.get("live_chart_requested"):
-            ml_df = _make_money_line_df(
-                symbol="BTC/USDT",
+        # ---- Ticker search row ----
+        _ts_col, _btn_col = st.columns([0.75, 0.25])
+        with _ts_col:
+            _search_raw = st.text_input(
+                "Search ticker",
+                value=st.session_state.get("search_ticker_raw", "BTC"),
+                key="search_ticker_input",
+                placeholder="e.g. SOL or SOL/USDT:USDT",
+            )
+        with _btn_col:
+            st.markdown("<div style='margin-top:1.75rem'></div>", unsafe_allow_html=True)
+            _load_clicked = st.button("Load chart", key="load_search_chart")
+
+        # Persist raw input across reruns so widget does not reset
+        if _search_raw != st.session_state.get("search_ticker_raw", "BTC"):
+            st.session_state["search_ticker_raw"] = _search_raw
+
+        # Gate: only fetch on explicit button click
+        if _load_clicked:
+            _norm = _normalize_symbol(_search_raw, cfg.exchange)
+            st.session_state["search_ticker_norm"] = _norm
+            st.session_state["search_chart_requested"] = True
+
+        _norm_sym = st.session_state.get("search_ticker_norm", "")
+        if st.session_state.get("search_chart_requested") and _norm_sym:
+            _ml_df = _make_money_line_df(
+                symbol=_norm_sym,
                 tf=sel_tf,
                 exchange=cfg.exchange,
             )
-            if ml_df is not None:
+            if _ml_df is not None and not _ml_df.empty:
+                from agents.signal_agent import latest_signal as _latest_signal
+
+                _sig = _latest_signal(_ml_df)
+                _state = _sig["state"]
+                _strength = int(_sig["strength"])
+                _last_px = _sig["price"]
+                _state_color = BULL if _state == "BULLISH" else BEAR
+                _state_bg = "#0f2e22" if _state == "BULLISH" else "#2e0f12"
+                _base_sym = _norm_sym.split("/")[0]
+                st.markdown(
+                    f"""
+                    <div style="background:{_state_bg};border:1px solid {_state_color}33;
+                                border-radius:12px;padding:10px 16px;margin-bottom:10px;
+                                display:flex;align-items:center;gap:18px">
+                      <span style="font-size:1.25rem;font-weight:800;color:#c7d0de">
+                        {_base_sym}
+                      </span>
+                      <span style="font-size:1.1rem;font-weight:800;color:{_state_color}">
+                        {_state}
+                      </span>
+                      <span style="color:{MUTE};font-size:.85rem">
+                        strength&nbsp;<strong style="color:{_state_color}">{_strength}</strong>/100
+                      </span>
+                      <span style="color:{MUTE};font-size:.85rem;margin-left:auto">
+                        last&nbsp;<strong style="color:#c7d0de">${_last_px:,.4f}</strong>
+                      </span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
                 try:
                     st.plotly_chart(
-                        _candle_fig(ml_df, "BTC/USDT"),
+                        _candle_fig(_ml_df, _norm_sym),
                         use_container_width=True,
                         config={"displayModeBar": False},
                     )
-                except Exception as exc:
-                    st.info(f"Chart render error: {exc}")
+                except Exception as _exc:
+                    st.info(f"Chart render error: {_exc}")
             else:
-                st.info("No chart data available. Check exchange connectivity.")
+                _exch_label = cfg.exchange.capitalize()
+                st.warning(
+                    f"No data for {_norm_sym} on {_exch_label} - check the symbol format."
+                )
         else:
-            st.info("Click 'Load live chart' to fetch live OHLCV.")
+            st.info("Type a ticker above and click 'Load chart' to fetch live OHLCV.")
 
     with c_sigs:
         st.markdown("#### Top signals")
