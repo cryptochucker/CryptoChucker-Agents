@@ -3,118 +3,119 @@
 **Build date:** 2026-06-07
 **Branch:** `build`
 **Python:** 3.11 (Windows 11 Pro)
-**Test count:** 269 passed, 0 failed
+**Test count:** 272 passed, 0 failed (ruff clean)
+**Reviewer/approver of record:** Codex CLI (`gpt-5.5`) at every stage gate
 
 ---
 
 ## What Was Built (All 6 Stages)
 
 ### Stage 1: Scaffold, Config, Utils, Docker, Secret Scan
-- `config.yaml` + `utils/config_schema.py`: pydantic-validated config with full field coverage
-- `utils/logging_config.py`: loguru setup with file rotation
-- `utils/fees.py`: per-exchange fee calculator (maker/taker)
-- `utils/helpers.py`: watchlist CSV/JSON import/export
-- `utils/data_fetcher.py`: CCXT public OHLCV with 3x retry/backoff
-- `utils/risk_manager.py`: position sizing, drawdown breached, check_limits
-- `utils/store.py`: SQLite persistence (signals, scans, positions, trades, equity)
-- `Dockerfile`, `docker-compose.yml`, `setup.sh`, `setup.ps1`
-- `.pre-commit-config.yaml` (gitleaks + ruff)
-- `.env.example` (names only, no values)
+- `config.yaml` + `utils/config_schema.py`: pydantic-validated config (all sections typed)
+- `utils/logging_config.py` (loguru + rotation); `utils/fees.py` (per-exchange maker/taker)
+- `utils/helpers.py` (watchlist CSV/JSON import/export); `utils/data_fetcher.py` (CCXT **public** OHLCV, 3x retry/backoff)
+- `utils/risk_manager.py` (sizing, drawdown, limits); `utils/store.py` (SQLite: signals/scans/positions/trades/equity)
+- `Dockerfile`, `docker-compose.yml`, `setup.sh`, `setup.ps1`; `.pre-commit-config.yaml` (gitleaks + ruff); `.env.example` (names only)
 
 ### Stage 2: Signal Engine + Money Line Pine + STRATEGY.md
-- `agents/signal_agent.py`: `get_money_line()`, `confirm()`, `latest_signal()` with ATR/MFI/RSI/ADX (pure pandas, no pandas_ta)
-- `indicators/money_line_pine.txt`: Pine v6 Money Line indicator
-- `STRATEGY.md`: transparent math documentation
+- `agents/signal_agent.py`: `get_money_line()`, `confirm()`, `latest_signal()` with ATR/MFI/RSI/ADX (pure pandas, no `pandas_ta`)
+- `indicators/money_line_pine.txt`: Pine v6 Money Line (compile-verified on TradingView, see `reviews/pine-money-line-compile.md`)
+- `STRATEGY.md`: transparent, independently-implemented math
 
 ### Stage 3: Scanner + Alerts + Money Scanner Pine
-- `agents/scanner_agent.py`: multi-symbol scanner with blacklist/whitelist, volume-surge, fresh-flip, min-strength, VWAP price-position filters
-- `agents/alert_agent.py`: Telegram/Discord/email fan-out with chart image rendering (kaleido/Plotly) and secret-redaction
-- `indicators/money_scanner_pine.txt`: Pine v6 multi-symbol scanner (up to 30 symbols)
+- `agents/scanner_agent.py`: fresh-flip scanner with blacklist/whitelist, volume-surge, VWAP price-position, min-strength; config-driven signal params
+- `agents/alert_agent.py`: Telegram/Discord/email fan-out + Plotly/kaleido chart image with link fallback; **secret-redacted** error logging
+- `indicators/money_scanner_pine.txt`: Pine v6 30-symbol screener table (global-scope functions)
 
 ### Stage 4: Paper Executor + Risk + Fees + Live Safety
-- `agents/executor_agent.py`: paper fill entry/exit with profit target, trailing stop, bearish flip, max hold, dip filter
-- `utils/safety.py`: `guard_live()` double-gate (PAPER_TRADING + ENABLE_LIVE_TRADING), `make_exchange_client()`
+- `agents/executor_agent.py`: paper fills (profit target net of fees, trailing stop, bearish-flip exit, max hold, dip filter); position size **capped to max exposure**
+- `utils/safety.py`: fail-closed **double gate** (`PAPER_TRADING=false` AND `ENABLE_LIVE_TRADING=true`, exact lowercase) + credential isolation (paper mode never reads API keys)
 
 ### Stage 5: Dashboard + Backtester + LLM Co-Pilot
-- `agents/dashboard.py`: Streamlit dashboard (Overview, Scanner, Backtester tabs; PAPER pill; KPIs; equity curve; live logs)
-- `agents/backtester.py`: pure numpy/pandas backtester (total_return, Sharpe, Sortino, maxDD, win_rate, profit_factor, Calmar) + grid search
-- `utils/llm_copilot.py`: optional signal validator (anthropic/openai/ollama; off by default; lazy imports; secret redaction)
+- `agents/dashboard.py`: Streamlit dashboard (Overview/Scanner/Backtest tabs; PAPER pill; KPIs; equity curve from real store; positions; **Recent alerts** feed; **Live logs**; **ticker search** to jump to any coin's Money Line). Default render makes **zero network calls** (chart fetch is button-gated).
+- `agents/backtester.py`: pure pandas/numpy engine (mark-to-market equity; crypto 24/7 annualized Sharpe/Sortino, maxDD, win rate, profit factor; configurable `fee_rate`; CSV export) + grid search
+- `utils/llm_copilot.py`: optional validator (anthropic/openai/ollama; OFF by default; lazy imports; secret redaction incl. bare-token regex)
 
 ### Stage 6: Orchestrator + E2E Smoke + README
-- `main.py`: `build_app()` wiring factory + `_App.run_once()` with per-agent exception isolation + `run()` APScheduler entry point
-- `tests/fixtures/ohlcv_btc_4h.csv`: 300 synthetic BTC 4h bars, deterministic, flip on last bar
-- `tests/test_e2e_paper_smoke.py`: 10 deterministic e2e assertions (no network)
-- `README.md`: quick start, API key guide, config customisation, backtesting, Pine indicator add instructions, dashboard guide
-- `BUILD_REPORT.md`: this file
+- `main.py`: `build_app()` factory + `_App.run_once()` (per-agent exception isolation) + APScheduler `run()`. Honors the real-env double gate (paper by default).
+- `tests/fixtures/ohlcv_btc_4h.csv` + `tests/test_e2e_paper_smoke.py`: deterministic end-to-end paper smoke (no network) proving a signal/trade/position/equity row persists, a real alert transport is exercised, and ccxt `create_order` is never called.
+- `README.md` (quick start, key guidance names-only, double-gate live warning, manual Pine-add steps, dashboard), `watchlist.json`, `BUILD_REPORT.md`.
 
 ---
 
 ## Codex Gate Verdicts
 
-| Gate | Stage | File | Verdict |
+| Gate | Stage | Verdict file | Result |
 |---|---|---|---|
 | Gate 0 | Design spec | `reviews/gate-0-codex-r2-PASS.md` | PASS (2 rounds) |
 | Gate 1 | Scaffold + utils | `reviews/gate-1-codex.md` | PASS |
-| Gate 2 | Signal engine | `reviews/gate-2-codex.md` | PASS |
-| Gate 3 | Scanner + alerts | `reviews/gate-3-codex.md` | PASS |
-| Gate 4 | Executor + safety | `reviews/gate-4-codex.md` | PASS |
+| Gate 2 | Signal engine | `reviews/gate-2-codex.md` | PASS (3 rounds) |
+| Gate 3 | Scanner + alerts | `reviews/gate-3-codex.md` | PASS (3 rounds) |
+| Gate 4 | Executor + safety | `reviews/gate-4-codex.md` | PASS (3 rounds) |
 | Gate 5 | Dashboard + backtester | `reviews/gate-5-codex.md` | PASS (3 rounds) |
-| Gate 6 | Orchestrator + e2e | _(controller to fill post live-smoke)_ | pending |
+| Gate 6 | Orchestrator + e2e + release | `reviews/gate-6-codex.md` | PASS |
+
+Across the build Codex caught and forced fixes for real bugs each stage (RSI/MFI zero-denominator, false first-bar flip,
+secret-leak in alert logging, case-insensitive live gate, default-path credential leak, realized-only equity,
+stock-market annualization, network-on-render, fee/PnL inconsistency, orchestrator gate mismatch). All resolved.
 
 ---
 
-## MEDIUM/LOW Finding Disposition
+## Live Paper Smoke Run Evidence (DoD item)
 
-| Finding | Stage | Disposition |
-|---|---|---|
-| Store test coverage (medium) | Gate 1 | Fixed in commit ba98cc7; 18 store tests ship |
-| config_schema tightening for later sections (medium) | Gate 1 | Deferred per plan; each stage adds pydantic submodel for its section |
-| Backtester equity realized-only (blocking) | Gate 5 R1 | Fixed: mark-to-market equity |
-| 24/7 annualization (blocking) | Gate 5 R1 | Fixed: 24*365 not 252*6.5 |
-| `_SECRET_RE` not applied in `_redact` (blocking) | Gate 5 R1 | Fixed: bare-token redaction pass added |
-| Dashboard network on load (blocking) | Gate 5 R2 | Fixed: chart/backtest behind buttons |
-| Hardcoded 0.1% fee in backtester (blocking) | Gate 5 R2 | Fixed: `fee_rate` param, both legs |
-| `_parse_response` could raise on malformed JSON (medium) | Gate 5 R2 | Fixed: robust JSON extractor |
-| Dashboard tab scan payload decoding (medium) | Gate 5 R2 | Fixed |
-| `profit_factor` infinite on all-breakeven (low) | Gate 5 R3 | Fixed: returns 0.0 |
-| `cfg.persistence.sqlite_path` not honored in dashboard (low) | Gate 5 R3 | Fixed |
-| Codex could not run pytest (low, read-only sandbox) | Gates 2-5 | Non-issue; controller verified locally each round |
-| `vectorbt`/`pandas_ta` no Windows wheels (medium, deviation) | All | Authorized deviation; equivalent pure-pandas/numpy implementations ship instead; noted in `requirements.txt` and `STRATEGY.md` |
+- **Command:** `build_app(load_config('config.yaml')).run_once()` (paper mode)
+- **UTC:** 2026-06-07T22:08:03Z
+- **Exchange / data:** `blofin`, real CCXT public OHLCV (BTC ~$61,745 at run time)
+- **Watchlist:** 8 symbols (`watchlist.json`, blofin perps)
+- **Result:** `RUN_ONCE_OK`, zero unhandled exceptions; 0 fresh flips at that instant (expected, flips are rare moment-to-moment); 1 equity snapshot written.
+- **Deterministic proof of a full trade cycle:** `tests/test_e2e_paper_smoke.py` (10 tests) runs the pipeline on the committed fixture and asserts a paper trade/position/equity/alert with `create_order` call_count == 0.
+
+## Dashboard Render Evidence (runtime, not just compile)
+
+- Real dashboard launched headless; rendered DOM has **no traceback** (`hasError: false`).
+- With a seeded store (pipeline run over the committed fixture: 48 signals, 2 paper trades, 2 open positions, 8 equity rows) the dashboard shows real KPIs, positions, alerts feed, and live logs.
+- Default render makes **zero network calls**; the Overview chart and ticker search fetch only on button click.
+- Ticker search verified present (`Search ticker` input + `Load chart` button).
+
+## Secret Scan Evidence (DoD item)
+
+- `.gitignore` excludes `.env`, `.env.*`, key files, logs, and DBs; `.venv/` is git-ignored (never committed).
+- `.env.example` ships key NAMES + the default gate values only.
+- `detect-secrets` over the committed source (`agents utils tests main.py config.yaml .env.example indicators`) flags
+  only `tests/test_alert_agent.py` and `tests/test_llm_copilot.py`, which contain **intentional fake** secret strings
+  (e.g. `sk-abc123...`, a 40-char hex) used to PROVE the redaction works - not real secrets.
+- A full `git log -p --all` high-risk pattern scan returns only those same intentional test fixtures.
+- The canonical `gitleaks` scan runs in **CI on every push** (`.github/workflows/ci.yml`) and in the pre-commit hook.
+- **Conclusion: no real secret values in the repo or its history.**
+
+---
+
+## MEDIUM/LOW Finding Disposition (summary)
+
+Every BLOCKING finding at each gate was fixed and re-reviewed to PASS (see each `reviews/gate-N-codex.md`). MEDIUM/LOW
+items were either fixed in the same stage or fixed as post-pass polish; none were silently deferred except the
+config-submodel tightening (explicitly planned to land per-consuming-stage, and all sections are now typed).
+**Authorized deviation:** `vectorbt` and `pandas_ta` have no Windows/Python-3.11 wheels, so equivalent pure
+pandas/numpy implementations ship instead (documented in `requirements.txt`, `STRATEGY.md`, and here). The two Pine
+indicators ship as **compile-verified committed source + manual-add steps** (auto-deploy was intentionally not used
+after it risked an existing script; see `reviews/pine-money-line-compile.md`).
 
 ---
 
 ## Exact Run Instructions
 
 ```bash
-# Install
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
-
-# Run tests
-.venv\Scripts\python.exe -m pytest -q
-
-# Lint
-.venv\Scripts\python.exe -m ruff check .
-
-# Verify orchestrator compiles
-.venv\Scripts\python.exe -m py_compile main.py
-
-# Run one cycle (paper mode, real public data)
-.venv\Scripts\python.exe -c "
-from main import build_app
-from utils.config_schema import load_config
-build_app(load_config('config.yaml')).run_once()
-"
-
-# Start scheduler (runs every cfg.scanner.interval_minutes)
-.venv\Scripts\python.exe main.py
-
-# Dashboard
-.venv\Scripts\python.exe -m streamlit run agents/dashboard.py
-
-# Docker
-docker compose up
+.venv\Scripts\python.exe -m pytest -q            # tests (272 pass)
+.venv\Scripts\python.exe -m ruff check .         # lint
+.venv\Scripts\python.exe main.py                 # start scheduler (paper)
+.venv\Scripts\python.exe -m streamlit run agents/dashboard.py   # dashboard
+docker compose up                                 # containerized
 ```
+
+Live trading is OFF by default. It is BUILT but UNTESTED; enabling it requires setting BOTH `PAPER_TRADING=false` and
+`ENABLE_LIVE_TRADING=true` in your `.env`, at your own risk, after validating paper mode (see README).
 
 ---
 
@@ -122,23 +123,11 @@ docker compose up
 
 | Item | Status |
 |---|---|
-| Signal engine (Money Line) operational | DONE |
-| Multi-symbol scanner with filters | DONE |
-| Paper executor with full risk management | DONE |
-| Alert fan-out (Telegram/Discord/email) | DONE |
-| Streamlit dashboard | DONE |
-| Backtester + grid search | DONE |
-| Two TradingView Pine v6 indicators | DONE |
-| SQLite persistence (all tables) | DONE |
-| Live trading double-gate (fail-closed) | DONE |
-| LLM co-pilot (optional, off by default) | DONE |
-| Config-driven via config.yaml | DONE |
-| Docker Compose deployment | DONE |
-| CI workflow (GitHub Actions) | DONE |
-| Secret hygiene (gitleaks, .env.example names-only) | DONE |
-| 269 tests pass, ruff clean | DONE |
-| Deterministic e2e paper smoke test (no network) | DONE |
-| Codex gate verdicts Gates 0-5 PASS | DONE |
-| Live paper smoke run (real public data) | _(controller to fill - Task 6.4)_ |
-| Publish to GitHub | _(controller to fill - Task 6.5)_ |
-| Gate 6 final Codex verdict | _(controller to fill - Task 6.G)_ |
+| All Codex gates 0-6 PASS (no BLOCKING) | DONE |
+| Unit + integration tests pass (incl. live-safety tests) | DONE (272 pass) |
+| Deterministic e2e paper smoke (zero errors) + live run on real public data | DONE |
+| Pine indicators compile-verified + source committed (manual-add) | DONE |
+| gitleaks/detect-secrets: zero real committed secrets (working tree + history) | DONE |
+| README/STRATEGY/config/.env.example/setup scripts complete | DONE |
+| BUILD_REPORT summarizes build + gate verdicts + finding disposition | DONE |
+| Published to github.com/cryptochucker/CryptoChucker-Agents | _pending final push (controller)_ |
