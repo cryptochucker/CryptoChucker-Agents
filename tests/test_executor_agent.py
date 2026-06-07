@@ -11,12 +11,17 @@ All required safety and correctness proofs:
   8. Position sizing uses risk_manager.position_size.
   9. Trailing stop exit when price drops below trailing level.
  10. max_hold_hours exit when position held too long.
+ 11. (BLOCKING 2) Executor construction in paper mode never reads secret env keys.
+ 12. (MEDIUM 3) Post-entry exposure: new entry refused when it would breach max_exposure.
+ 13. (MEDIUM 4) use_dip_filter: dip met -> entry; not met -> skip; no df -> skip check.
 """
 from __future__ import annotations
 
 import datetime
 from unittest.mock import MagicMock
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from agents.executor_agent import Executor
@@ -24,6 +29,22 @@ from agents.scanner_agent import SignalEvent
 from utils.config_schema import Config, ExecutorCfg, FeesCfg, RiskCfg
 from utils.safety import LiveTradingDisabled
 from utils.store import Store
+
+_SECRET_KEYS = ("EXCHANGE_API_KEY", "EXCHANGE_API_SECRET", "EXCHANGE_API_PASSWORD")
+
+
+class _SecretGuardEnv(dict):
+    """Dict subclass that RAISES if any secret key is accessed via .get() or []."""
+
+    def get(self, key, default=None):  # type: ignore[override]
+        if key in _SECRET_KEYS:
+            raise AssertionError(f"Paper mode accessed secret key: {key!r}")
+        return super().get(key, default)
+
+    def __getitem__(self, key):
+        if key in _SECRET_KEYS:
+            raise AssertionError(f"Paper mode accessed secret key: {key!r}")
+        return super().__getitem__(key)
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -41,6 +62,7 @@ def _make_cfg(
     max_drawdown_pct: float = 0.20,
     balance: float = 10_000.0,
     risk_pct: float = 0.01,
+    max_exposure_pct: float = 1.0,
 ) -> Config:
     return Config(
         exchange="blofin",
@@ -54,7 +76,7 @@ def _make_cfg(
         risk=RiskCfg(
             account_balance=balance,
             risk_pct=risk_pct,
-            max_exposure_pct=0.50,
+            max_exposure_pct=max_exposure_pct,
             max_trades_per_day=max_trades_per_day,
             max_consecutive_losses=4,
             max_drawdown_pct=max_drawdown_pct,
@@ -175,20 +197,31 @@ def test_live_order_raises_when_disabled(tmp_path) -> None:
     """_live_order must raise LiveTradingDisabled in paper mode."""
     cfg = _make_cfg()
     store = _make_store(tmp_path)
-    ex = Executor(cfg, store, client=_mock_ccxt_client(), env=_PAPER_ENV)
+    client = _mock_ccxt_client()
+    ex = Executor(cfg, store, client=client, env=_PAPER_ENV)
 
     with pytest.raises(LiveTradingDisabled):
         ex._live_order("BTC/USDT", "buy", 1.0, 100.0)
+
+    # LOW 6: guard must fire BEFORE any order is placed
+    assert client.create_order.call_count == 0, (
+        "create_order was called before LiveTradingDisabled guard -- safety failure"
+    )
 
 
 def test_live_order_raises_with_empty_env(tmp_path) -> None:
     """_live_order must raise with empty env (all defaults -> paper)."""
     cfg = _make_cfg()
     store = _make_store(tmp_path)
-    ex = Executor(cfg, store, client=_mock_ccxt_client(), env={})
+    client = _mock_ccxt_client()
+    ex = Executor(cfg, store, client=client, env={})
 
     with pytest.raises(LiveTradingDisabled):
         ex._live_order("BTC/USDT", "sell", 0.5, 110.0)
+
+    assert client.create_order.call_count == 0, (
+        "create_order called before LiveTradingDisabled guard"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -456,3 +489,184 @@ def test_max_hold_hours_triggers_exit(tmp_path) -> None:
     assert len(positions) >= 1 or len(trades) >= 2, (
         "max_hold_hours did not trigger an exit"
     )
+
+
+# ---------------------------------------------------------------------------
+# 11. BLOCKING 2 -- executor paper construction never reads secret env keys
+# ---------------------------------------------------------------------------
+
+
+def test_executor_paper_construction_never_reads_secrets(tmp_path) -> None:
+    """BLOCKING 2: constructing Executor in paper mode must not access secret keys.
+
+    The guard env raises AssertionError if any secret key is accessed via .get()
+    or [].  If the executor (or make_exchange_client) ever reads credentials in
+    paper mode, this test fails loudly.
+    """
+    cfg = _make_cfg()
+    store = _make_store(tmp_path)
+    guard_env = _SecretGuardEnv(_PAPER_ENV)
+
+    # Must NOT raise -- paper path never touches secret keys
+    ex = Executor(cfg, store, env=guard_env)
+    assert ex._client.apiKey in (None, "")
+
+
+def test_executor_paper_signal_never_reads_secrets(tmp_path) -> None:
+    """BLOCKING 2: processing a bullish signal in paper mode must not access secret keys."""
+    cfg = _make_cfg()
+    store = _make_store(tmp_path)
+    guard_env = _SecretGuardEnv(_PAPER_ENV)
+    ex = Executor(cfg, store, env=guard_env)
+
+    # Must NOT raise even when we process a live signal
+    ex.on_signal(_bullish_event(price=100.0))
+    trades = store.load_trades()
+    assert len(trades) >= 1
+
+
+# ---------------------------------------------------------------------------
+# 12. MEDIUM 3 -- post-entry exposure check
+# ---------------------------------------------------------------------------
+
+
+def test_entry_refused_when_post_entry_exposure_would_breach(tmp_path) -> None:
+    """MEDIUM 3: a new entry that would push total exposure > max_exposure_pct must be refused.
+
+    Setup: max_exposure_pct=0.10 (10%), account=10000 -> max notional=1000.
+    Existing open position: 900 notional (already at 9% exposure).
+    New entry notional at risk_pct=0.01 -> risk_amount=100, stop 2% below = 2 per unit
+    -> qty=50 -> notional=50*100=5000 -> post-entry exposure=5900/10000=59% -> REFUSED.
+    """
+    cfg = _make_cfg(balance=10_000.0, risk_pct=0.01)
+    # Override max_exposure_pct to something tight
+    cfg = Config(
+        exchange="blofin",
+        executor=ExecutorCfg(profit_target_pct=0.06, use_dip_filter=False,
+                             trailing_stop_pct=0.02, max_hold_hours=48),
+        fees=FeesCfg(rates={"blofin": {"maker": 0.0002, "taker": 0.0006}}),
+        risk=RiskCfg(
+            account_balance=10_000.0,
+            risk_pct=0.01,
+            max_exposure_pct=0.10,  # 10% max
+            max_trades_per_day=10,
+            max_consecutive_losses=4,
+            max_drawdown_pct=0.20,
+        ),
+    )
+    store = _make_store(tmp_path)
+
+    # Seed an existing open position with notional=900 (9% of 10000)
+    store.save_position({
+        "symbol": "ETH/USDT",
+        "mode": "paper",
+        "side": "long",
+        "entry_price": 900.0,
+        "qty": 1.0,
+        "stop_price": 882.0,
+    })
+
+    client = _mock_ccxt_client()
+    ex = Executor(cfg, store, client=client, env=_PAPER_ENV)
+    ex.on_signal(_bullish_event(price=100.0))
+
+    new_trades = [t for t in store.load_trades() if t["symbol"] == "BTC/USDT"]
+    assert len(new_trades) == 0, (
+        "Entry should have been refused: post-entry exposure would exceed max_exposure_pct"
+    )
+
+
+def test_entry_allowed_when_post_entry_exposure_just_under(tmp_path) -> None:
+    """MEDIUM 3: an entry that keeps post-entry exposure under max_exposure_pct must be allowed."""
+    cfg = Config(
+        exchange="blofin",
+        executor=ExecutorCfg(profit_target_pct=0.06, use_dip_filter=False,
+                             trailing_stop_pct=0.02, max_hold_hours=48),
+        fees=FeesCfg(rates={"blofin": {"maker": 0.0002, "taker": 0.0006}}),
+        risk=RiskCfg(
+            account_balance=10_000.0,
+            risk_pct=0.001,   # very small risk -> very small notional
+            max_exposure_pct=0.90,  # very wide limit -> should always pass
+            max_trades_per_day=10,
+            max_consecutive_losses=4,
+            max_drawdown_pct=0.20,
+        ),
+    )
+    store = _make_store(tmp_path)
+    client = _mock_ccxt_client()
+    ex = Executor(cfg, store, client=client, env=_PAPER_ENV)
+    ex.on_signal(_bullish_event(price=100.0))
+
+    new_trades = [t for t in store.load_trades() if t["symbol"] == "BTC/USDT"]
+    assert len(new_trades) >= 1, "Entry should have been allowed under max_exposure_pct"
+
+
+# ---------------------------------------------------------------------------
+# 13. MEDIUM 4 -- use_dip_filter enforcement
+# ---------------------------------------------------------------------------
+
+
+def _make_ohlcv_df(n: int = 50, close_values=None) -> pd.DataFrame:
+    """Build a minimal OHLCV DataFrame for dip-filter tests."""
+    rng = np.random.default_rng(42)
+    if close_values is not None:
+        close = np.array(close_values, dtype=float)
+        n = len(close)
+    else:
+        close = 100.0 + np.cumsum(rng.normal(0, 0.5, n))
+    high = close + rng.uniform(0.1, 0.5, n)
+    low = close - rng.uniform(0.1, 0.5, n)
+    open_ = close - rng.uniform(-0.2, 0.2, n)
+    volume = rng.uniform(1000, 5000, n)
+    return pd.DataFrame({
+        "open": open_, "high": high, "low": low, "close": close, "volume": volume,
+    })
+
+
+def test_dip_filter_met_allows_entry(tmp_path) -> None:
+    """MEDIUM 4: when dip condition holds (close < EMA20 or RSI < 40), entry is allowed."""
+    cfg = _make_cfg(use_dip_filter=True)
+    store = _make_store(tmp_path)
+    client = _mock_ccxt_client()
+    ex = Executor(cfg, store, client=client, env=_PAPER_ENV)
+
+    # Build a df where price is trending down so last close < EMA20
+    # Start high then ramp down so last close is below the 20-bar EMA
+    close_values = [110.0] * 30 + [90.0] * 25  # sharp drop -> last close well below EMA20
+    df = _make_ohlcv_df(close_values=close_values)
+
+    ex.on_signal(_bullish_event(price=float(df["close"].iloc[-1])), df=df)
+
+    trades = [t for t in store.load_trades() if t["symbol"] == "BTC/USDT"]
+    assert len(trades) >= 1, "Entry should be allowed when dip condition is met"
+
+
+def test_dip_filter_not_met_blocks_entry(tmp_path) -> None:
+    """MEDIUM 4: when dip condition is NOT met (close >= EMA20 AND RSI >= 40), entry is skipped."""
+    cfg = _make_cfg(use_dip_filter=True)
+    store = _make_store(tmp_path)
+    client = _mock_ccxt_client()
+    ex = Executor(cfg, store, client=client, env=_PAPER_ENV)
+
+    # Build a df where price has been rising smoothly so close > EMA20 and RSI > 40
+    close_values = list(np.linspace(80.0, 120.0, 55))  # steady uptrend -> close > EMA20
+    df = _make_ohlcv_df(close_values=close_values)
+
+    ex.on_signal(_bullish_event(price=float(df["close"].iloc[-1])), df=df)
+
+    trades = [t for t in store.load_trades() if t["symbol"] == "BTC/USDT"]
+    assert len(trades) == 0, "Entry should be blocked when dip condition is NOT met"
+
+
+def test_dip_filter_no_df_skips_check(tmp_path) -> None:
+    """MEDIUM 4: when use_dip_filter=True but no df provided, the check is skipped (entry proceeds)."""
+    cfg = _make_cfg(use_dip_filter=True)
+    store = _make_store(tmp_path)
+    client = _mock_ccxt_client()
+    ex = Executor(cfg, store, client=client, env=_PAPER_ENV)
+
+    # No df -> dip check skipped -> entry should proceed on a bullish flip
+    ex.on_signal(_bullish_event(price=100.0))  # df=None default
+
+    trades = [t for t in store.load_trades() if t["symbol"] == "BTC/USDT"]
+    assert len(trades) >= 1, "Entry should proceed when no df is provided (dip check skipped)"

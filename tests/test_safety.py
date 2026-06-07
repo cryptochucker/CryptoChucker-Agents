@@ -4,10 +4,11 @@ These are the most critical tests in the codebase.  They prove that:
   1. Default environment -> live_enabled is False.
   2. Only PAPER_TRADING=false (ENABLE_LIVE_TRADING still false/unset) -> still False.
   3. PAPER_TRADING=true + ENABLE_LIVE_TRADING=true -> still False.
-  4. Both gates set correctly -> True.
+  4. Both gates set EXACTLY to lowercase "false"/"true" -> True.
   5. In paper mode make_exchange_client never loads credentials (apiKey is None or "").
   6. guard_live raises LiveTradingDisabled in paper mode.
-  7. Case-insensitivity: TRUE/FALSE/True/False all work.
+  7. BLOCKING: case-SENSITIVE gate -- "False"/"True"/"FALSE"/"TRUE" all BLOCKED.
+  8. BLOCKING: secret env vars NEVER accessed in paper mode.
 """
 from __future__ import annotations
 
@@ -20,6 +21,22 @@ from utils.safety import LiveTradingDisabled, guard_live, live_enabled, make_exc
 # ---------------------------------------------------------------------------
 _PAPER = {"PAPER_TRADING": "true", "ENABLE_LIVE_TRADING": "false"}
 _LIVE = {"PAPER_TRADING": "false", "ENABLE_LIVE_TRADING": "true"}
+
+_SECRET_KEYS = ("EXCHANGE_API_KEY", "EXCHANGE_API_SECRET", "EXCHANGE_API_PASSWORD")
+
+
+class _SecretGuardEnv(dict):
+    """Dict subclass that RAISES if any secret key is accessed via get() or []."""
+
+    def get(self, key, default=None):  # type: ignore[override]
+        if key in _SECRET_KEYS:
+            raise AssertionError(f"Paper mode accessed secret key: {key!r}")
+        return super().get(key, default)
+
+    def __getitem__(self, key):
+        if key in _SECRET_KEYS:
+            raise AssertionError(f"Paper mode accessed secret key: {key!r}")
+        return super().__getitem__(key)
 
 
 # ---------------------------------------------------------------------------
@@ -50,26 +67,36 @@ def test_single_flag_enable_true_alone_blocks() -> None:
 
 
 def test_both_gates_set_correctly_enables_live() -> None:
-    """Both PAPER_TRADING=false AND ENABLE_LIVE_TRADING=true -> True."""
+    """Both PAPER_TRADING=false AND ENABLE_LIVE_TRADING=true (exact lowercase) -> True."""
     assert live_enabled(_LIVE) is True
 
 
-def test_case_insensitive_true() -> None:
-    """TRUE / True / true all treated the same."""
-    assert live_enabled({"PAPER_TRADING": "FALSE", "ENABLE_LIVE_TRADING": "TRUE"}) is True
-    assert live_enabled({"PAPER_TRADING": "False", "ENABLE_LIVE_TRADING": "True"}) is True
+# ---------------------------------------------------------------------------
+# BLOCKING 1: exact lowercase-only gate (case-SENSITIVE)
+# ---------------------------------------------------------------------------
 
 
-def test_case_insensitive_false() -> None:
-    """FALSE / False / false all treated the same."""
-    assert live_enabled({"PAPER_TRADING": "FALSE", "ENABLE_LIVE_TRADING": "FALSE"}) is False
+def test_mixed_case_false_true_blocked() -> None:
+    """BLOCKING: 'False'/'True' (Python bool str) must be BLOCKED -- not live."""
+    assert live_enabled({"PAPER_TRADING": "False", "ENABLE_LIVE_TRADING": "True"}) is False
 
 
-def test_garbage_values_treated_as_false() -> None:
-    """Non-true/false junk -> treated as falsy -> live stays off."""
-    # PAPER_TRADING=junk -> _truthy("junk") is False -> paper_false is False -> overall False
+def test_upper_case_false_true_blocked() -> None:
+    """BLOCKING: 'FALSE'/'TRUE' must be BLOCKED -- not live."""
+    assert live_enabled({"PAPER_TRADING": "FALSE", "ENABLE_LIVE_TRADING": "TRUE"}) is False
+
+
+def test_exact_lowercase_enables_live() -> None:
+    """Only exact lowercase 'false'/'true' opens the gate."""
+    assert live_enabled({"PAPER_TRADING": "false", "ENABLE_LIVE_TRADING": "true"}) is True
+
+
+def test_garbage_values_treated_as_blocked() -> None:
+    """Non-exact junk -> live stays off."""
     assert live_enabled({"PAPER_TRADING": "yes", "ENABLE_LIVE_TRADING": "true"}) is False
     assert live_enabled({"PAPER_TRADING": "false", "ENABLE_LIVE_TRADING": "1"}) is False
+    assert live_enabled({"PAPER_TRADING": "false", "ENABLE_LIVE_TRADING": ""}) is False
+    assert live_enabled({"PAPER_TRADING": "", "ENABLE_LIVE_TRADING": "true"}) is False
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +128,31 @@ def test_paper_client_returns_ccxt_exchange() -> None:
 
     client = make_exchange_client("blofin", env=_PAPER)
     assert isinstance(client, ccxt.Exchange)
+
+
+# ---------------------------------------------------------------------------
+# BLOCKING 2: strict credential isolation -- secret keys NEVER accessed in paper
+# ---------------------------------------------------------------------------
+
+
+def test_paper_mode_never_accesses_secret_keys() -> None:
+    """BLOCKING: make_exchange_client in paper mode must NEVER call .get() on secret keys.
+
+    Uses a guard dict that RAISES on any secret-key access.  If paper mode
+    accidentally reads EXCHANGE_API_KEY / EXCHANGE_API_SECRET / EXCHANGE_API_PASSWORD
+    the test will fail with AssertionError from inside the mapping.
+    """
+    guard_env = _SecretGuardEnv(_PAPER)
+    # Must NOT raise -- paper path never touches secret keys
+    client = make_exchange_client("blofin", env=guard_env)
+    assert client.apiKey in (None, "")
+
+
+def test_paper_mode_with_secret_guard_and_empty_gate_env() -> None:
+    """BLOCKING: paper mode with empty env also must not access secrets."""
+    guard_env = _SecretGuardEnv({})  # all defaults -> paper
+    client = make_exchange_client("blofin", env=guard_env)
+    assert client.apiKey in (None, "")
 
 
 # ---------------------------------------------------------------------------

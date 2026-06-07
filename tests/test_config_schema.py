@@ -294,3 +294,36 @@ def test_config_has_executor_and_fees_fields(tmp_path):
     assert cfg.executor.profit_target_pct == pytest.approx(0.08)
     assert cfg.executor.use_dip_filter is False
     assert cfg.fees.rates["blofin"]["taker"] == pytest.approx(0.0006)
+
+
+# ---- MEDIUM 5: FeesCfg validates per-exchange entries via _ExchangeFeeCfg ----
+
+
+def test_fees_cfg_negative_maker_raises():
+    """MEDIUM 5: negative maker fee must raise a ValidationError."""
+    with pytest.raises((ValueError, ValidationError)):
+        FeesCfg(rates={"blofin": {"maker": -0.001, "taker": 0.0006}})
+
+
+def test_fees_cfg_negative_taker_raises():
+    """MEDIUM 5: negative taker fee must raise a ValidationError."""
+    with pytest.raises((ValueError, ValidationError)):
+        FeesCfg(rates={"blofin": {"maker": 0.0002, "taker": -0.001}})
+
+
+def test_fees_cfg_zero_maker_allowed():
+    """MEDIUM 5: zero maker fee is valid (ge=0)."""
+    f = FeesCfg(rates={"blofin": {"maker": 0.0, "taker": 0.001}})
+    assert f.rates["blofin"]["maker"] == pytest.approx(0.0)
+
+
+def test_fees_cfg_zero_taker_allowed():
+    """MEDIUM 5: zero taker fee is valid (ge=0)."""
+    f = FeesCfg(rates={"blofin": {"maker": 0.001, "taker": 0.0}})
+    assert f.rates["blofin"]["taker"] == pytest.approx(0.0)
+
+
+def test_fees_cfg_negative_fee_via_flat_dict_raises():
+    """MEDIUM 5: negative fee through the flat-dict YAML path must also raise."""
+    with pytest.raises((ValueError, ValidationError)):
+        FeesCfg(**{"blofin": {"maker": -0.0001, "taker": 0.0006}})

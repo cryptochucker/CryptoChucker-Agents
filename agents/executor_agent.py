@@ -50,6 +50,8 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+import pandas as pd
+
 from utils.config_schema import Config
 from utils.fees import fee
 from utils.risk_manager import check_limits, drawdown_breached, position_size
@@ -114,13 +116,22 @@ class Executor:
     # Public interface
     # ------------------------------------------------------------------
 
-    def on_signal(self, event: Any) -> None:
+    def on_signal(self, event: Any, df: "pd.DataFrame | None" = None) -> None:
         """Process one signal event (SignalEvent or compatible dict).
 
         Dispatch order:
           1. Check max-hold expiry on any open position for this symbol.
           2. If holding: check trailing stop, profit target, bearish-flip exit.
           3. If not holding and signal is a fresh bullish flip: attempt entry.
+
+        Parameters
+        ----------
+        event:
+            A SignalEvent or dict-like object with symbol/state/flip/price.
+        df:
+            Optional OHLCV DataFrame (columns: open, high, low, close, volume).
+            Required for the dip filter (``cfg.executor.use_dip_filter``).
+            When ``None``, the dip filter is skipped gracefully even if enabled.
 
         All exceptions are caught and logged so one bad signal cannot crash
         the orchestrator loop.
@@ -141,7 +152,7 @@ class Executor:
 
             # 3. Entry gate
             if state == "BULLISH" and flip:
-                self._attempt_entry(symbol, price, event)
+                self._attempt_entry(symbol, price, event, df=df)
 
         except Exception:  # noqa: BLE001
             logger.exception("Executor error processing signal for %s", _attr(event, "symbol", "?"))
@@ -150,8 +161,22 @@ class Executor:
     # Private: entry
     # ------------------------------------------------------------------
 
-    def _attempt_entry(self, symbol: str, price: float, event: Any) -> None:
-        """Evaluate all entry guards and open a paper fill if all pass."""
+    def _attempt_entry(self, symbol: str, price: float, event: Any, df: "pd.DataFrame | None" = None) -> None:
+        """Evaluate all entry guards and open a paper fill if all pass.
+
+        Parameters
+        ----------
+        symbol:
+            Market symbol (e.g. "BTC/USDT").
+        price:
+            Current price from the signal event.
+        event:
+            Original signal event (for logging).
+        df:
+            Optional OHLCV DataFrame for the dip filter.  When ``None`` the dip
+            filter is skipped even if ``cfg.executor.use_dip_filter`` is True
+            (documented graceful skip -- no OHLCV context available).
+        """
         cfg = self._cfg
         exc_cfg = cfg.executor
         risk_cfg = cfg.risk
@@ -162,26 +187,56 @@ class Executor:
             logger.warning("Executor: entry blocked for %s -- drawdown limit breached", symbol)
             return
 
-        # --- Daily cap + consecutive losses + exposure ---
-        # Always re-read trades_today from the store so the cap is accurate
-        # even if trades were added externally or the executor was restarted.
-        trades_today = self._count_trades_today()
-        # Exposure: sum open position notional / account balance
-        open_positions = self._store.load_positions(status="open")
-        exposure_notional = sum(
-            (pos.get("qty") or 0) * (pos.get("entry_price") or 0) for pos in open_positions
-        )
-        exposure_pct = exposure_notional / max(risk_cfg.account_balance, 1.0)
+        # --- Dip filter (optional; skipped gracefully when df is None) ---
+        # When use_dip_filter is True AND an OHLCV DataFrame is provided, only
+        # enter on a bullish flip when the dip condition holds:
+        #   last close < EMA(close, 20)  OR  RSI(close, 14) < 40
+        # If no df is provided the check is skipped (OHLCV context not available).
+        if exc_cfg.use_dip_filter and df is not None:
+            close = df["close"]
+            ema20 = close.ewm(span=20, adjust=False).mean()
+            delta = close.diff()
+            gain = delta.where(delta > 0, 0.0)
+            loss = (-delta).where(delta < 0, 0.0)
+            avg_gain = gain.ewm(alpha=1.0 / 14, adjust=False).mean()
+            avg_loss = loss.ewm(alpha=1.0 / 14, adjust=False).mean()
+            safe_loss = avg_loss.where(avg_loss != 0, float("nan"))
+            rs = avg_gain / safe_loss
+            rsi_series = (100.0 - 100.0 / (1.0 + rs)).fillna(50.0)
+            last_close = float(close.iloc[-1])
+            last_ema20 = float(ema20.iloc[-1])
+            last_rsi = float(rsi_series.iloc[-1])
+            dip_condition = last_close < last_ema20 or last_rsi < 40
+            if not dip_condition:
+                logger.info(
+                    "Executor: dip filter blocked entry for %s "
+                    "(close=%.6f ema20=%.6f rsi=%.1f)",
+                    symbol, last_close, last_ema20, last_rsi,
+                )
+                return
 
-        limit = check_limits(trades_today, self._consecutive_losses, exposure_pct, cfg)
-        if not limit.allowed:
-            logger.warning("Executor: entry blocked for %s -- %s", symbol, limit.reason)
-            return
-
-        # --- Position sizing ---
+        # --- Position sizing (needed for post-entry exposure check below) ---
         trailing_stop_pct = exc_cfg.trailing_stop_pct if exc_cfg.trailing_stop_pct > 0 else 0.02
         stop_price = price * (1.0 - trailing_stop_pct)
         qty = position_size(risk_cfg.account_balance, risk_cfg.risk_pct, price, stop_price)
+        new_notional = price * qty
+
+        # --- Daily cap + consecutive losses + POST-ENTRY exposure ---
+        # Always re-read trades_today from the store so the cap is accurate
+        # even if trades were added externally or the executor was restarted.
+        trades_today = self._count_trades_today()
+        # Exposure: sum open position notional / account balance AFTER this entry
+        open_positions = self._store.load_positions(status="open")
+        current_exposure_notional = sum(
+            (pos.get("qty") or 0) * (pos.get("entry_price") or 0) for pos in open_positions
+        )
+        # Refuse when adding this position would EXCEED max_exposure_pct
+        post_entry_exposure_pct = (current_exposure_notional + new_notional) / max(risk_cfg.account_balance, 1.0)
+
+        limit = check_limits(trades_today, self._consecutive_losses, post_entry_exposure_pct, cfg)
+        if not limit.allowed:
+            logger.warning("Executor: entry blocked for %s -- %s", symbol, limit.reason)
+            return
 
         # --- Paper fill ---
         self._paper_fill_entry(symbol, price, qty, stop_price)

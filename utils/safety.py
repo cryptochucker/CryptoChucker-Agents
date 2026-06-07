@@ -6,10 +6,13 @@ It is deliberately minimal and must stay that way.
 Rules
 -----
 - ``live_enabled`` returns True ONLY when BOTH:
-    1. PAPER_TRADING is explicitly "false" (case-insensitive), AND
-    2. ENABLE_LIVE_TRADING is explicitly "true" (case-insensitive).
+    1. PAPER_TRADING is EXACTLY the string "false" (case-SENSITIVE), AND
+    2. ENABLE_LIVE_TRADING is EXACTLY the string "true" (case-SENSITIVE).
   Any other combination returns False.  Missing keys default to the safe values
   (PAPER_TRADING -> "true", ENABLE_LIVE_TRADING -> "false").
+
+  IMPORTANT: "False", "FALSE", "True", "TRUE", "yes", "1", "" are ALL treated
+  as the safe/blocked direction.  Only the exact lowercase strings open a gate.
 
 - ``make_exchange_client`` returns a PUBLIC/unauthenticated ccxt client in paper
   mode (no apiKey, no secret, no password).  It only loads env-var credentials
@@ -38,32 +41,18 @@ class LiveTradingDisabled(RuntimeError):
     """Raised when a live-order call is attempted but the double gate is not open."""
 
 
-def _is_true(value: str) -> bool:
-    """Return True iff *value* is exactly 'true' (case-insensitive)."""
-    return str(value).strip().lower() == "true"
-
-
-def _is_false(value: str) -> bool:
-    """Return True iff *value* is exactly 'false' (case-insensitive).
-
-    Anything that is not explicitly 'false' is treated as the safe default
-    (i.e. paper mode stays ON).  This means garbage values like 'yes' or '0'
-    do NOT disable paper trading -- they are treated as if PAPER_TRADING=true.
-    """
-    return str(value).strip().lower() == "false"
-
-
 def live_enabled(env: dict[str, str] | None = None) -> bool:
     """Return True ONLY when both live-trading gates are explicitly open.
 
-    Gates:
-      1. PAPER_TRADING must be explicitly "false"  (default: "true" -> closed).
-         Any value that is not exactly "false" (case-insensitive) keeps paper ON.
-      2. ENABLE_LIVE_TRADING must be explicitly "true" (default: "false" -> closed).
-         Any value that is not exactly "true" (case-insensitive) keeps live OFF.
+    Gates (case-SENSITIVE exact string match -- no .lower(), no strip()):
+      1. PAPER_TRADING must be EXACTLY "false"  (default: "true" -> closed).
+         "False", "FALSE", "yes", "0", "" all keep paper ON.
+      2. ENABLE_LIVE_TRADING must be EXACTLY "true" (default: "false" -> closed).
+         "True", "TRUE", "yes", "1", "" all keep live OFF.
 
     Both must be satisfied simultaneously; either gate alone is insufficient.
-    Garbage / unknown values always resolve to the safe (paper) direction.
+    Any value other than the exact lowercase strings resolves to the safe
+    (paper) direction.
 
     Args:
         env: Explicit environment mapping.  ``None`` uses ``os.environ``.
@@ -72,8 +61,8 @@ def live_enabled(env: dict[str, str] | None = None) -> bool:
         True only when both conditions hold; False for every other combination.
     """
     e: dict[str, str] = env if env is not None else dict(os.environ)
-    paper_is_false = _is_false(e.get("PAPER_TRADING", "true"))
-    live_is_true = _is_true(e.get("ENABLE_LIVE_TRADING", "false"))
+    paper_is_false = str(e.get("PAPER_TRADING", "true")) == "false"
+    live_is_true = str(e.get("ENABLE_LIVE_TRADING", "false")) == "true"
     return paper_is_false and live_is_true
 
 
@@ -82,11 +71,16 @@ def make_exchange_client(exchange: str, env: dict[str, str] | None = None) -> cc
 
     In PAPER mode (default / either gate closed):
         Returns a PUBLIC, unauthenticated client -- no apiKey, no secret,
-        no password.  Credentials are never read, never passed.
+        no password.  The secret env vars (EXCHANGE_API_KEY, EXCHANGE_API_SECRET,
+        EXCHANGE_API_PASSWORD) are NEVER read, never accessed.
 
     In LIVE mode (both gates open):
         Reads EXCHANGE_API_KEY, EXCHANGE_API_SECRET, EXCHANGE_API_PASSWORD
         from the environment and constructs an authenticated client.
+
+    Credential isolation guarantee: the paper path calls ``klass({"enableRateLimit": True})``
+    and touches NO other keys from ``env``.  A caller may pass a mapping that raises
+    on secret-key access; paper mode will never trigger it.
 
     Args:
         exchange: ccxt exchange identifier (e.g. "blofin", "binance").
@@ -99,22 +93,22 @@ def make_exchange_client(exchange: str, env: dict[str, str] | None = None) -> cc
     Raises:
         AttributeError: If *exchange* is not a valid ccxt exchange name.
     """
-    e: dict[str, str] = env if env is not None else dict(os.environ)
+    resolved_env: dict[str, str] = env if env is not None else dict(os.environ)
     klass = getattr(ccxt, exchange)
 
-    if live_enabled(e):
-        # Both gates open -- load credentials from env var NAMES only.
+    if live_enabled(resolved_env):
+        # Both gates open -- read credentials ONLY here, never in the paper path.
         # Secret values are read here but never logged or stored.
         return klass(
             {
-                "apiKey": e.get("EXCHANGE_API_KEY", ""),
-                "secret": e.get("EXCHANGE_API_SECRET", ""),
-                "password": e.get("EXCHANGE_API_PASSWORD", ""),
+                "apiKey": resolved_env.get("EXCHANGE_API_KEY", ""),
+                "secret": resolved_env.get("EXCHANGE_API_SECRET", ""),
+                "password": resolved_env.get("EXCHANGE_API_PASSWORD", ""),
                 "enableRateLimit": True,
             }
         )
 
-    # Paper mode: public client, zero credentials.
+    # Paper mode: public client -- ZERO credential access.
     return klass({"enableRateLimit": True})
 
 

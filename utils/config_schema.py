@@ -86,11 +86,16 @@ class FeesCfg(BaseModel):
           blofin: {maker: 0.0002, taker: 0.0006}
           binance: {maker: 0.0002, taker: 0.0004}
 
-    Internally stored as ``rates: dict[str, dict[str, float]]`` so callers
-    can do ``cfg.fees.rates.get(exchange, DEFAULT)``.
+    Internally stored as ``rates: dict[str, _ExchangeFeeCfg]`` and then
+    re-exported as ``dict[str, dict[str, float]]`` via the ``rates`` property so
+    callers can still do ``cfg.fees.rates.get(exchange, DEFAULT)``.
+
+    Validation: every per-exchange entry is validated through ``_ExchangeFeeCfg``
+    which enforces ``maker >= 0`` and ``taker >= 0``.  Negative fee rates raise
+    a ``ValidationError``.
     """
 
-    rates: dict[str, dict[str, float]] = Field(default_factory=dict)
+    rates: dict[str, _ExchangeFeeCfg] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -110,6 +115,19 @@ class FeesCfg(BaseModel):
             # Treat the whole dict as the rates mapping
             return {"rates": data}
         return data
+
+    def model_post_init(self, __context: object) -> None:
+        """Convert the validated ``_ExchangeFeeCfg`` values to plain dicts.
+
+        Callers rely on ``cfg.fees.rates["blofin"]["taker"]`` (dict access), so
+        we replace the pydantic model values with plain dicts after validation.
+        This keeps the public API unchanged while adding validation on ingest.
+        """
+        object.__setattr__(
+            self,
+            "rates",
+            {k: {"maker": v.maker, "taker": v.taker} for k, v in self.rates.items()},
+        )
 
 
 class Config(BaseModel):
