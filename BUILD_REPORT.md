@@ -164,4 +164,4 @@ from signals. Wiring and validating live execution is a clearly-scoped follow-on
 | gitleaks/detect-secrets: zero real committed secrets (working tree + history) | DONE |
 | README/STRATEGY/config/.env.example/setup scripts complete | DONE |
 | BUILD_REPORT summarizes build + gate verdicts + finding disposition | DONE |
-| Published to github.com/cryptochucker/CryptoChucker-Agents | _pending final push (controller)_ |
+| Published to github.com/cryptochucker/CryptoChucker-Agents | DONE - PUBLIC repo, default branch `main`, 92 files, pushed 2026-06-07 |
