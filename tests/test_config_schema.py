@@ -101,7 +101,7 @@ def test_signal_cfg_min_valid_window_accepted():
 
 # ---- Stage 3: ScannerCfg, AlertsCfg, WatchlistCfg ----
 
-from utils.config_schema import ScannerCfg, AlertsCfg, WatchlistCfg  # noqa: E402
+from utils.config_schema import AlertsCfg, ScannerCfg, WatchlistCfg  # noqa: E402
 
 
 def test_scanner_cfg_defaults():

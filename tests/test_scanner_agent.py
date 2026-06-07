@@ -6,8 +6,7 @@ import pandas as pd
 import pytest
 
 from agents.scanner_agent import Scanner, SignalEvent
-from utils.config_schema import Config, ScannerCfg, AlertsCfg, WatchlistCfg
-
+from utils.config_schema import AlertsCfg, Config, ScannerCfg, WatchlistCfg
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -73,7 +72,6 @@ def cfg_with_min_strength():
 @pytest.fixture
 def cfg_blacklist():
     """Config with a blacklisted symbol."""
-    from utils.config_schema import WatchlistCfg
     return Config(
         scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=2.0),
         watchlist=WatchlistCfg(blacklist=["ETH/USDT"]),
@@ -83,7 +81,6 @@ def cfg_blacklist():
 @pytest.fixture
 def cfg_whitelist():
     """Config with a whitelist restricting to a single symbol."""
-    from utils.config_schema import WatchlistCfg
     return Config(
         scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=2.0),
         watchlist=WatchlistCfg(whitelist=["BTC/USDT"]),

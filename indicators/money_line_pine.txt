@@ -24,9 +24,16 @@ bull  = slope >= 0
 mlColor = bull ? color.new(color.teal, 0) : color.new(color.red, 0)
 plot(ml, "Money Line", color=mlColor, linewidth=2)
 
-// Flip markers
-flipUp = bull and not bull[1]
-flipDn = (not bull) and bull[1]
+// Warmup guard: require a real prior slope value and enough bars to have
+// passed the indicator warmup period (smooth + slopeLen bars minimum).
+// Without this guard, the very first bar where bull[1] is na (no prior state)
+// would emit a spurious flip because "bull and na(bull[1])" evaluates to true
+// in Pine v6 when na is treated as false in boolean context.
+warmupDone = not na(slope[1]) and bar_index > smooth + slopeLen
+
+// Flip markers (only after warmup)
+flipUp = warmupDone and bull and not bull[1]
+flipDn = warmupDone and (not bull) and bull[1]
 plotshape(flipUp, title="Bull flip", style=shape.triangleup,
           location=location.belowbar, color=color.teal, size=size.small)
 plotshape(flipDn, title="Bear flip", style=shape.triangledown,

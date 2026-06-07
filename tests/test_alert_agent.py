@@ -4,10 +4,9 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from agents.scanner_agent import SignalEvent
 from agents.alert_agent import AlertAgent, build_chart_image, chart_link
-from utils.config_schema import Config, ScannerCfg, AlertsCfg
-
+from agents.scanner_agent import SignalEvent
+from utils.config_schema import AlertsCfg, Config, ScannerCfg
 
 # ---------------------------------------------------------------------------
 # Helpers
