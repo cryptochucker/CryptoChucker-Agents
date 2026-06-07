@@ -8,12 +8,18 @@ Guards for empty store (fresh DB) so it renders without data.
 from __future__ import annotations
 
 import os
+import sys
 from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+
+# Ensure the repo root is importable no matter how streamlit launches this script
+# (streamlit puts the script's own dir on sys.path, not the package root), so the
+# lazy `from utils.store import Store` / `from agents...` imports below resolve.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ---------------------------------------------------------------------------
 # Page config (must be first Streamlit call)
