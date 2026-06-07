@@ -14,7 +14,6 @@ import pytest
 from utils.config_schema import Config
 from utils.store import Store
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
