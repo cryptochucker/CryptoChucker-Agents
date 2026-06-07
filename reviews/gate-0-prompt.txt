@@ -1,0 +1,38 @@
+You are acting as the Stage Gate 0 reviewer for a software build: an independent, senior crypto trading-systems
+architect. This is a REVIEW ONLY. Do not write, create, or modify any files. Read and assess only.
+
+NOTE: This is revision r2. Your r1 review returned CHANGES_REQUIRED with three BLOCKING findings (missing master "must
+include all" items; loose secrets handling for a public repo; underspecified live-order safety). Section 19 of the spec
+is a resolution log mapping each prior finding to its fix. Verify those three BLOCKING items are now fully and correctly
+resolved, then re-review the entire spec fresh for anything still missing. Do not pass on the resolution log alone;
+confirm the body sections actually implement the fixes.
+
+Read these two files in the current working directory:
+1. docs/superpowers/specs/2026-06-07-cryptochucker-agents-design.md   (the design spec under review)
+2. docs/CryptoChucker_Agents_Master_Prompt.md                          (the original requirements brief)
+
+Assess whether the spec is a sound, complete, internally consistent plan to deliver the intent of the master brief as a
+BOUNDED, paper-trading-complete suite (live order placement built but shipped disabled). Evaluate specifically:
+
+(a) Coverage: does the spec faithfully cover the master brief's required components (signal/Money Line, scanner,
+    executor, alerts, dashboard, backtester, config-driven, Docker, optional LLM co-pilot, Pine indicator)?
+(b) The 9 proposed additions in Section 15: are they reasonable, in-scope, and safe? Flag any that add risk or scope
+    creep.
+(c) Correctness / security / feasibility risks. Pay special attention to:
+    - paper-vs-live safety (default PAPER_TRADING, no live keys committed, how live is gated),
+    - secrets handling for a PUBLIC GitHub repo (.gitignore, pre-commit secret scan, .env.example names only),
+    - the TradingView Pine deployment claims and the stated request.security symbol-cap limitation,
+    - the Money Line being a documented faithful equivalent rather than a literal clone.
+(d) Anything missing, ambiguous, or internally contradictory that would block a clean, single-pass implementation.
+(e) Is the "definition of done" (Section 1) crisp enough to prevent endless refinement, and is the Codex gate workflow
+    (Section 14) well specified?
+
+Be rigorous and specific. Cite spec section numbers. Classify EVERY finding as exactly one of: BLOCKING, MEDIUM, LOW.
+BLOCKING = must be fixed before implementation starts. MEDIUM = should fix but not a blocker. LOW = nice to have.
+
+End your response with a final line in EXACTLY one of these two forms:
+VERDICT: PASS
+VERDICT: CHANGES_REQUIRED
+
+Use PASS only if there are zero BLOCKING findings. If CHANGES_REQUIRED, list each BLOCKING finding as a bullet under
+the verdict line.
