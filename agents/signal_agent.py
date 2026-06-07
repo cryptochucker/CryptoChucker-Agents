@@ -150,8 +150,13 @@ def get_money_line(
     slope = ml.diff().rolling(slope_len).mean().fillna(0.0)
     out["state"] = np.where(slope >= 0, "BULLISH", "BEARISH")
 
-    # Flip: state change from prior bar
-    out["flip_detected"] = out["state"].ne(out["state"].shift()).fillna(False)
+    # Flip: state change from prior bar.
+    # NOTE: state.ne(state.shift()) would make the first row True because
+    # "BULLISH" != NaN evaluates to True in pandas.  A flip requires a real
+    # prior bar, so we force row 0 to False.
+    flip = out["state"].ne(out["state"].shift())
+    flip.iloc[0] = False
+    out["flip_detected"] = flip.astype(bool)
 
     # Composite strength (0-100)
     atr = _atr(out["high"], out["low"], out["close"], length=14).bfill()
@@ -198,29 +203,48 @@ def latest_signal(
     Parameters
     ----------
     df:
-        Output of get_money_line().
+        Output of get_money_line().  Must contain 'close' (and 'high', 'low')
+        columns if the RSI/ADX filters are enabled.
     use_rsi_filter:
         When True, downgrade state to BEARISH if RSI >= rsi_overbought.
+        Rationale: avoid entering a long into exhausted/overbought conditions.
+        Only downgrades BULLISH; a BEARISH base state is unchanged.
     use_adx_filter:
-        When True, downgrade state to BEARISH if ADX < adx_min (weak trend).
+        When True, downgrade state to BEARISH if ADX < adx_min (weak/no trend).
+        Rationale: the Money Line trend call is unreliable without directional
+        conviction; ADX < adx_min means the trend signal should not be trusted.
+        A strong trend (ADX >= adx_min) preserves the base state unchanged.
+        Only downgrades BULLISH; a BEARISH base state is unchanged.
     rsi_overbought:
-        RSI threshold above which the signal is considered overbought.
+        RSI threshold (0-100).  Bars at or above this level are overbought.
+        Default 70.
     adx_min:
-        Minimum ADX for a valid trend signal.
+        Minimum ADX (0-100) required to trust a trend signal.  Default 20.
 
     Returns
     -------
-    dict with keys: state (str), strength (float), flip (bool), price (float).
+    dict with keys:
+        state  (str)   -- 'BULLISH' or 'BEARISH' after optional filter downgrades.
+        strength (float) -- signal_strength from get_money_line() [0-100].
+        flip   (bool)  -- flip_detected on the latest bar.
+        price  (float) -- close price of the latest bar.
+
+    Gating contract (both filters only downgrade BULLISH; BEARISH is never upgraded):
+        RSI filter: BULLISH + RSI >= rsi_overbought  -> BEARISH
+        ADX filter: BULLISH + ADX <  adx_min         -> BEARISH (weak trend)
+                    BULLISH + ADX >= adx_min          -> BULLISH preserved
+        Filter order: RSI applied first; ADX applied second on surviving state.
     """
     last = df.iloc[-1]
     state = str(last["state"])
 
-    if use_rsi_filter and "close" in df.columns:
+    # Filters only downgrade BULLISH -> BEARISH; they never upgrade BEARISH.
+    if use_rsi_filter and state == "BULLISH" and "close" in df.columns:
         rsi_series = _rsi(df["close"], length=14)
         if rsi_series.iloc[-1] >= rsi_overbought:
             state = "BEARISH"
 
-    if use_adx_filter and all(c in df.columns for c in ("high", "low", "close")):
+    if use_adx_filter and state == "BULLISH" and all(c in df.columns for c in ("high", "low", "close")):
         adx_series = _adx(df["high"], df["low"], df["close"], length=14)
         if adx_series.iloc[-1] < adx_min:
             state = "BEARISH"

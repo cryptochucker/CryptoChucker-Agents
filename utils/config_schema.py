@@ -22,9 +22,9 @@ class RiskCfg(BaseModel):
 class SignalCfg(BaseModel):
     """Parameters for the Money Line signal engine."""
 
-    money_line_length: int = 8
-    smooth: int = 14
-    slope_len: int = 3
+    money_line_length: int = Field(8, ge=1)
+    smooth: int = Field(14, ge=1)
+    slope_len: int = Field(3, ge=1)
     use_rsi_filter: bool = False
     use_adx_filter: bool = False
 
