@@ -8,6 +8,11 @@ def test_position_size():
     assert position_size(10000, 0.01, entry=100, stop=95) == pytest.approx(20.0)
 
 
+def test_position_size_raises_when_entry_equals_stop():
+    with pytest.raises(ValueError):
+        position_size(10000, 0.01, entry=100, stop=100)
+
+
 def test_drawdown_breached():
     assert drawdown_breached([100, 120, 90], max_dd_pct=0.2) is True   # 25% from peak 120
     assert drawdown_breached([100, 110, 105], max_dd_pct=0.2) is False

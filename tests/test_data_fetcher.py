@@ -25,3 +25,11 @@ def test_fetch_ohlcv_retry_on_network_error():
     df = DataFetcher(exchange_obj=ex).fetch_ohlcv("BTC/USDT", "4h", 3)
     assert len(df) == 3
     assert ex.fetch_ohlcv.call_count == 3
+
+
+def test_public_client_has_no_credentials():
+    """DataFetcher constructed without API keys must have an unauthenticated client."""
+    fetcher = DataFetcher(exchange="binance")
+    client = fetcher._ex
+    assert client.apiKey in (None, "")
+    assert client.secret in (None, "")

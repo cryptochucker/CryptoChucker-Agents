@@ -16,6 +16,8 @@ def position_size(balance: float, risk_pct: float, entry: float, stop: float) ->
     Returns:
         Number of units to trade.
     """
+    if entry <= 0 or stop <= 0 or entry == stop:
+        raise ValueError("entry and stop must be positive and different")
     risk_amount = balance * risk_pct
     return risk_amount / abs(entry - stop)
 
