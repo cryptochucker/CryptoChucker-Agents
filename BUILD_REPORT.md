@@ -102,6 +102,24 @@ stock-market annualization, network-on-render, fee/PnL inconsistency, orchestrat
 
 ---
 
+## Known Limitations (non-blocking, paper-only release)
+
+Codex's final Gate 6 review confirmed these do NOT block publish for a paper-only release, but they are documented
+honestly for the next iteration:
+
+1. **Orchestrated alerts use the link fallback, not the chart image.** `run_once()` calls `alert_agent.send(event)`
+   without the OHLCV dataframe, so live scanner alerts include the TradingView chart link rather than an attached Plotly
+   image (even when `alerts.send_chart_image=true`). The image path itself is implemented and unit-tested; only the
+   orchestrator wiring passes no df. Threading the df into `send()` is a small follow-on.
+2. **In-memory position state is not fully restart-durable.** Open positions are persisted to SQLite (and are consulted
+   for exposure and max-hold), but the profit-target / trailing-stop / bearish-flip EXIT logic currently keys off the
+   in-memory `_positions` map, so positions opened before a process restart are not re-hydrated for exit management.
+   Acceptable for a paper-only release; full position rehydration on startup is a follow-on.
+3. **Live order execution is scaffolded but NOT wired into operation.** This is by design (see README): paper-only this
+   release; the double gate, authenticated-client factory, and `_live_order()` guard exist for the future live follow-on.
+
+---
+
 ## MEDIUM/LOW Finding Disposition (summary)
 
 Every BLOCKING finding at each gate was fixed and re-reviewed to PASS (see each `reviews/gate-N-codex.md`). MEDIUM/LOW
@@ -119,7 +137,7 @@ after it risked an existing script; see `reviews/pine-money-line-compile.md`).
 ```bash
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python.exe -m pytest -q            # tests (272 pass)
+.venv\Scripts\python.exe -m pytest -q            # tests (275 pass)
 .venv\Scripts\python.exe -m ruff check .         # lint
 .venv\Scripts\python.exe main.py                 # start scheduler (paper)
 .venv\Scripts\python.exe -m streamlit run agents/dashboard.py   # dashboard
@@ -140,7 +158,7 @@ from signals. Wiring and validating live execution is a clearly-scoped follow-on
 | Item | Status |
 |---|---|
 | All Codex gates 0-6 PASS (no BLOCKING) | DONE |
-| Unit + integration tests pass (incl. live-safety tests) | DONE (272 pass) |
+| Unit + integration tests pass (incl. live-safety tests) | DONE (275 pass) |
 | Deterministic e2e paper smoke (zero errors) + live run on real public data | DONE |
 | Pine indicators compile-verified + source committed (manual-add) | DONE |
 | gitleaks/detect-secrets: zero real committed secrets (working tree + history) | DONE |
