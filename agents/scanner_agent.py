@@ -104,8 +104,14 @@ class Scanner:
                 # ---- Fetch OHLCV -------------------------------------------
                 df = self._fetcher(sym, tf, limit)
 
-                # ---- Money Line computation ---------------------------------
-                out = self._signal_fn(df)
+                # ---- Money Line computation (config-driven) -----------------
+                cfg = self._cfg
+                out = self._signal_fn(
+                    df,
+                    length=cfg.signal.money_line_length,
+                    smooth=cfg.signal.smooth,
+                    slope_len=cfg.signal.slope_len,
+                )
 
                 # ---- Volume-surge filter ------------------------------------
                 # Last bar volume must exceed surge_mult * rolling-20 mean.
@@ -122,13 +128,36 @@ class Scanner:
                         continue
 
                 # ---- Fresh-flip gate (BLOCKING 2) ---------------------------
-                sig = latest_signal(out)
+                sig = latest_signal(
+                    out,
+                    use_rsi_filter=cfg.signal.use_rsi_filter,
+                    use_adx_filter=cfg.signal.use_adx_filter,
+                )
                 if not sig["flip"]:
                     continue
 
                 # ---- min_strength filter ------------------------------------
                 if sig["strength"] < scanner_cfg.min_strength:
                     continue
+
+                # ---- VWAP price-position filter -----------------------------
+                # Bullish flips require close > VWAP; bearish flips require
+                # close < VWAP.  Computed over vwap_length bars using typical
+                # price (H+L+C)/3 volume-weighted, matching spec exactly.
+                if scanner_cfg.use_vwap_filter:
+                    vlen = scanner_cfg.vwap_length
+                    tp = (out["high"] + out["low"] + out["close"]) / 3.0
+                    vwap = (
+                        (tp * out["volume"]).rolling(vlen).sum()
+                        / out["volume"].rolling(vlen).sum()
+                    )
+                    last_close = out["close"].iloc[-1]
+                    last_vwap = vwap.iloc[-1]
+                    if not pd.isna(last_vwap):
+                        if sig["state"] == "BULLISH" and last_close <= last_vwap:
+                            continue
+                        if sig["state"] == "BEARISH" and last_close >= last_vwap:
+                            continue
 
                 events.append(
                     SignalEvent(

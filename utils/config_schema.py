@@ -38,6 +38,8 @@ class ScannerCfg(BaseModel):
     min_strength: float = Field(55.0, ge=0, le=100)
     rank_top_n: int = Field(10, ge=1)
     volume_surge_mult: float = Field(2.0, gt=0)
+    use_vwap_filter: bool = True
+    vwap_length: int = Field(20, ge=1)
 
 
 class AlertsCfg(BaseModel):

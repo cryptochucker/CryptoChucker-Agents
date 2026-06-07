@@ -139,7 +139,7 @@ def _make_controlled_scanner(monkeypatch, sig_map: dict, cfg: Config):
         df2._sym = symbol  # type: ignore[attr-defined]
         return df2
 
-    def signal_fn(df2):
+    def signal_fn(df2, **kwargs):  # accept length/smooth/slope_len from config-driven call
         df2._sym = getattr(df2, "_sym", None)  # preserve attribute through copy
         return df2
 
@@ -295,7 +295,7 @@ def test_scan_volume_surge_equality_boundary(monkeypatch):
         df._sym = symbol  # type: ignore[attr-defined]
         return df
 
-    def signal_fn(df):
+    def signal_fn(df, **kwargs):
         df._sym = getattr(df, "_sym", None)
         return df
 
@@ -359,7 +359,7 @@ def test_scan_empty_watchlist(cfg):
 def test_deterministic_ranking_by_strength(monkeypatch):
     """Ranking must be strictly by strength desc when flip=True for all symbols."""
     cfg = Config(
-        scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=0.1),
+        scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=0.1, use_vwap_filter=False),
     )
     sig_map = {
         "AAA/USDT": {"state": "BULLISH", "strength": 80.0, "flip": True, "price": 1.0},
@@ -378,7 +378,7 @@ def test_deterministic_ranking_by_strength(monkeypatch):
 def test_deterministic_min_strength_excludes_weak(monkeypatch):
     """Symbols below min_strength must be excluded even when flip=True."""
     cfg = Config(
-        scanner=ScannerCfg(min_strength=65.0, rank_top_n=10, volume_surge_mult=0.1),
+        scanner=ScannerCfg(min_strength=65.0, rank_top_n=10, volume_surge_mult=0.1, use_vwap_filter=False),
     )
     sig_map = {
         "STRONG/USDT": {"state": "BULLISH", "strength": 80.0, "flip": True, "price": 1.0},
@@ -394,7 +394,7 @@ def test_deterministic_min_strength_excludes_weak(monkeypatch):
 def test_deterministic_non_flip_excluded(monkeypatch):
     """Symbols where flip=False must never appear in results."""
     cfg = Config(
-        scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=0.1),
+        scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=0.1, use_vwap_filter=False),
     )
     sig_map = {
         "FLIP/USDT":   {"state": "BULLISH", "strength": 75.0, "flip": True,  "price": 1.0},
@@ -410,7 +410,7 @@ def test_deterministic_non_flip_excluded(monkeypatch):
 def test_deterministic_blacklist_excludes(monkeypatch):
     """Blacklisted symbols must not appear even when flip=True and strength is high."""
     cfg = Config(
-        scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=0.1),
+        scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=0.1, use_vwap_filter=False),
         watchlist=WatchlistCfg(blacklist=["BL/USDT"]),
     )
     sig_map = {
@@ -432,7 +432,7 @@ def test_deterministic_blacklist_excludes(monkeypatch):
 def test_isolation_bad_fetcher_does_not_abort_good_symbols(monkeypatch):
     """A fetcher that raises for one symbol must not stop events from other symbols."""
     cfg = Config(
-        scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=0.1),
+        scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=0.1, use_vwap_filter=False),
     )
 
     def controlled_latest_signal(out, **kwargs):
@@ -448,7 +448,7 @@ def test_isolation_bad_fetcher_does_not_abort_good_symbols(monkeypatch):
         df._sym = symbol  # type: ignore[attr-defined]
         return df
 
-    def signal_fn(df):
+    def signal_fn(df, **kwargs):
         df._sym = getattr(df, "_sym", None)
         return df
 
@@ -464,7 +464,7 @@ def test_isolation_bad_fetcher_does_not_abort_good_symbols(monkeypatch):
 def test_isolation_malformed_df_does_not_abort_good_symbols(monkeypatch):
     """A fetcher that returns a very short DataFrame must not abort the scan."""
     cfg = Config(
-        scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=0.1),
+        scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=0.1, use_vwap_filter=False),
     )
 
     def controlled_latest_signal(out, **kwargs):
@@ -490,7 +490,7 @@ def test_isolation_malformed_df_does_not_abort_good_symbols(monkeypatch):
         df._sym = symbol  # type: ignore[attr-defined]
         return df
 
-    def signal_fn(df):
+    def signal_fn(df, **kwargs):
         df._sym = getattr(df, "_sym", None)
         return df
 
@@ -511,7 +511,7 @@ def test_isolation_malformed_df_does_not_abort_good_symbols(monkeypatch):
 def test_only_fresh_flips_emitted(monkeypatch):
     """Symbols that did NOT flip on the latest bar must be excluded."""
     cfg = Config(
-        scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=0.1),
+        scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=0.1, use_vwap_filter=False),
     )
     sig_map = {
         "FLIP1/USDT": {"state": "BULLISH", "strength": 70.0, "flip": True,  "price": 1.0},
@@ -529,3 +529,208 @@ def test_only_fresh_flips_emitted(monkeypatch):
     # All returned events must have flip=True
     for e in events:
         assert e.flip is True, f"{e.symbol} has flip=False in result"
+
+
+# ---------------------------------------------------------------------------
+# Gate 3 MEDIUM — Config-driven signal params flow through scanner
+# ---------------------------------------------------------------------------
+
+
+def test_signal_config_kwargs_passed_to_get_money_line(monkeypatch):
+    """Scanner must pass SignalCfg params to get_money_line as keyword args."""
+    from utils.config_schema import SignalCfg
+
+    captured: dict = {}
+
+    def fake_get_money_line(df, length=8, smooth=14, slope_len=3):
+        captured["length"] = length
+        captured["smooth"] = smooth
+        captured["slope_len"] = slope_len
+        # Return a minimal valid output DataFrame so the rest of scan() works.
+        out = df.copy()
+        out["money_line"] = out["close"]
+        out["state"] = "BULLISH"
+        flip = [False] * len(out)
+        flip[-1] = True
+        out["flip_detected"] = flip
+        out["signal_strength"] = 80.0
+        return out
+
+    monkeypatch.setattr("agents.scanner_agent.get_money_line", fake_get_money_line)
+
+    custom_signal_cfg = SignalCfg(
+        money_line_length=12,
+        smooth=21,
+        slope_len=5,
+        use_rsi_filter=False,
+        use_adx_filter=False,
+    )
+    cfg = Config(
+        scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=0.1),
+        signal=custom_signal_cfg,
+    )
+
+    df = _make_minimal_df()
+    scanner = Scanner(cfg, lambda sym, tf, limit=300: df)
+    scanner.scan(["BTC/USDT"])
+
+    assert captured.get("length") == 12, f"Expected length=12, got {captured.get('length')}"
+    assert captured.get("smooth") == 21, f"Expected smooth=21, got {captured.get('smooth')}"
+    assert captured.get("slope_len") == 5, f"Expected slope_len=5, got {captured.get('slope_len')}"
+
+
+def test_signal_config_kwargs_passed_to_latest_signal(monkeypatch):
+    """Scanner must pass use_rsi_filter and use_adx_filter from SignalCfg to latest_signal."""
+    from utils.config_schema import SignalCfg
+
+    captured: dict = {}
+
+    def fake_latest_signal(df, use_rsi_filter=False, use_adx_filter=False, **kwargs):
+        captured["use_rsi_filter"] = use_rsi_filter
+        captured["use_adx_filter"] = use_adx_filter
+        return {"state": "BULLISH", "strength": 80.0, "flip": True, "price": 100.0}
+
+    monkeypatch.setattr("agents.scanner_agent.latest_signal", fake_latest_signal)
+
+    custom_signal_cfg = SignalCfg(
+        money_line_length=8,
+        smooth=14,
+        slope_len=3,
+        use_rsi_filter=True,
+        use_adx_filter=True,
+    )
+    cfg = Config(
+        scanner=ScannerCfg(min_strength=0, rank_top_n=10, volume_surge_mult=0.1),
+        signal=custom_signal_cfg,
+    )
+
+    df = _make_minimal_df()
+    scanner = Scanner(cfg, lambda sym, tf, limit=300: df)
+    scanner.scan(["BTC/USDT"])
+
+    assert captured.get("use_rsi_filter") is True, (
+        f"Expected use_rsi_filter=True, got {captured.get('use_rsi_filter')}"
+    )
+    assert captured.get("use_adx_filter") is True, (
+        f"Expected use_adx_filter=True, got {captured.get('use_adx_filter')}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Gate 3 MEDIUM — VWAP price-position filter
+# ---------------------------------------------------------------------------
+
+
+def _make_vwap_df(close_prices, volume=1000.0, vwap_length=20):
+    """Build a DataFrame where VWAP is calculable and predictable.
+
+    Produces a DataFrame with uniform volume and explicit close prices so we can
+    control whether last close is above or below the rolling VWAP.  The volume
+    surge filter is bypassed by giving the last bar a 99x spike.
+    """
+    n = max(len(close_prices), vwap_length + 5)
+    # Pad front with the first price value if needed
+    prices = ([close_prices[0]] * (n - len(close_prices))) + list(close_prices)
+    c = pd.array(prices, dtype=float)
+    idx = pd.date_range("2026-01-01", periods=n, freq="4h")
+    vol = [volume] * n
+    vol[-1] = volume * 99  # big surge to pass volume filter (surge_mult default 2.0)
+    return pd.DataFrame(
+        {
+            "open": c,
+            "high": [p * 1.005 for p in prices],
+            "low":  [p * 0.995 for p in prices],
+            "close": c,
+            "volume": vol,
+        },
+        index=idx,
+    )
+
+
+def _make_vwap_scanner(monkeypatch, state: str, flip: bool, cfg: Config):
+    """Build a Scanner whose latest_signal returns the given state/flip, passthrough signal_fn."""
+
+    def fake_latest_signal(df, **kwargs):
+        return {"state": state, "strength": 80.0, "flip": flip, "price": float(df["close"].iloc[-1])}
+
+    monkeypatch.setattr("agents.scanner_agent.latest_signal", fake_latest_signal)
+
+    def signal_fn(df, **kwargs):
+        """Passthrough: add required columns so VWAP filter can read them."""
+        out = df.copy()
+        out["money_line"] = out["close"]
+        out["state"] = state
+        flip_col = [False] * len(out)
+        flip_col[-1] = flip
+        out["flip_detected"] = flip_col
+        out["signal_strength"] = 80.0
+        return out
+
+    return signal_fn
+
+
+def test_vwap_filter_bullish_below_vwap_excluded(monkeypatch):
+    """A BULLISH flip with last close BELOW VWAP must be excluded when use_vwap_filter=True."""
+    cfg = Config(
+        scanner=ScannerCfg(
+            min_strength=0, rank_top_n=10, volume_surge_mult=0.1,
+            use_vwap_filter=True, vwap_length=5,
+        ),
+    )
+    # Build a DF where we start high then drop: last close < VWAP.
+    # Prices: 20 bars at 200.0, then last 3 bars dropping to 100.0
+    # VWAP over last 5 bars will be above 100 since prior bars were higher.
+    prices = [200.0] * 22 + [150.0, 120.0, 100.0]
+    df = _make_vwap_df(prices, vwap_length=5)
+
+    signal_fn = _make_vwap_scanner(monkeypatch, state="BULLISH", flip=True, cfg=cfg)
+    scanner = Scanner(cfg, lambda sym, tf, limit=300: df, signal_fn=signal_fn)
+    events = scanner.scan(["BTC/USDT"])
+
+    symbols = [e.symbol for e in events]
+    assert "BTC/USDT" not in symbols, (
+        "BULLISH flip with close BELOW VWAP must be filtered when use_vwap_filter=True"
+    )
+
+
+def test_vwap_filter_disabled_bullish_below_vwap_passes(monkeypatch):
+    """The same BULLISH flip with close below VWAP must PASS when use_vwap_filter=False."""
+    cfg = Config(
+        scanner=ScannerCfg(
+            min_strength=0, rank_top_n=10, volume_surge_mult=0.1,
+            use_vwap_filter=False, vwap_length=5,
+        ),
+    )
+    prices = [200.0] * 22 + [150.0, 120.0, 100.0]
+    df = _make_vwap_df(prices, vwap_length=5)
+
+    signal_fn = _make_vwap_scanner(monkeypatch, state="BULLISH", flip=True, cfg=cfg)
+    scanner = Scanner(cfg, lambda sym, tf, limit=300: df, signal_fn=signal_fn)
+    events = scanner.scan(["BTC/USDT"])
+
+    symbols = [e.symbol for e in events]
+    assert "BTC/USDT" in symbols, (
+        "BULLISH flip with close below VWAP must PASS when use_vwap_filter=False"
+    )
+
+
+def test_vwap_filter_bullish_above_vwap_passes(monkeypatch):
+    """A BULLISH flip with last close ABOVE VWAP must pass through when use_vwap_filter=True."""
+    cfg = Config(
+        scanner=ScannerCfg(
+            min_strength=0, rank_top_n=10, volume_surge_mult=0.1,
+            use_vwap_filter=True, vwap_length=5,
+        ),
+    )
+    # Prices: start low, finish high: last close > VWAP over last 5 bars.
+    prices = [100.0] * 22 + [120.0, 150.0, 200.0]
+    df = _make_vwap_df(prices, vwap_length=5)
+
+    signal_fn = _make_vwap_scanner(monkeypatch, state="BULLISH", flip=True, cfg=cfg)
+    scanner = Scanner(cfg, lambda sym, tf, limit=300: df, signal_fn=signal_fn)
+    events = scanner.scan(["BTC/USDT"])
+
+    symbols = [e.symbol for e in events]
+    assert "BTC/USDT" in symbols, (
+        "BULLISH flip with close ABOVE VWAP must pass the VWAP filter"
+    )
