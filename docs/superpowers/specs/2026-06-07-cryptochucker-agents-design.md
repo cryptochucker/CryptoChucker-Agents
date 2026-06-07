@@ -1,8 +1,8 @@
 # CryptoChucker Agents, Design Spec
 
 - **Date:** 2026-06-07
-- **Revision:** r2 (incorporates Codex Gate 0 review; see Section 19 resolution log)
-- **Status:** Re-submitted for Codex Gate 0, then user formal approval
+- **Revision:** r3 (Codex Gate 0 returned PASS on r2; r3 applies the remaining MEDIUM/LOW polish, see Section 19)
+- **Status:** Codex Gate 0 PASSED; awaiting user formal approval
 - **Owner:** Jason Elam
 - **Repo target:** `github.com/cryptochucker/CryptoChucker-Agents` (open-source, public)
 - **Source brief:** `docs/CryptoChucker_Agents_Master_Prompt.md`
@@ -69,9 +69,9 @@ Then the repo is handed to the user for **formal approval**. No additional polis
 ### Out of scope / deferred (clearly labeled follow-ons)
 - **Live order execution enabled** (real capital). Code path exists, ships disabled behind the double gate; enabling is
   a separate, explicitly-scoped follow-on after the user has run paper mode.
-- **Walk-forward optimization and Monte Carlo simulation.** This is an **approved scope reduction** from the master
-  brief's backtester wording: simple parameter **grid search is the Gate-0-accepted optimizer** for this bounded build;
-  walk-forward and Monte Carlo are a labeled follow-on.
+- **Walk-forward optimization and Monte Carlo simulation.** This is a **proposed scope reduction from the master
+  brief's backtester wording, accepted at Gate 0 PASS**: simple parameter **grid search is the accepted optimizer** for
+  this bounded build; walk-forward and Monte Carlo are a labeled follow-on.
 - Redis inter-agent pub/sub (optional in the prompt; in-process orchestrator is sufficient).
 - `ta-lib` (hard to install on Windows; `pandas_ta` covers the need).
 - Pine on-chart scanning of hundreds of symbols (TradingView limits per-indicator `request.security` usage; the Python
@@ -89,7 +89,7 @@ Then the repo is handed to the user for **formal approval**. No additional polis
 | Backtester depth | vectorbt core + full metrics + CSV + Plotly equity curve + simple grid search (approved reduction) |
 | Persistence | SQLite default (self-contained); Supabase optional |
 | Alerting | Native Python (python-telegram-bot, Discord webhook, smtplib); chart image via kaleido + link fallback |
-| Default exchange (data + disabled-live adapter) | BloFin/BitGet via CCXT; multi-exchange supported |
+| Default + supported exchanges | BloFin default via CCXT; Coinbase, Kraken, Binance, Bybit, BitGet also supported config targets (config validation + per-exchange connection smoke) |
 | TradingView indicators | `CryptoChucker - Money Line v1`, `CryptoChucker - Money Scanner v1` (new slots) |
 | Pine scanner watchlist | 30 symbols by design, user-editable in indicator settings |
 | Money Line framing | Independently implemented faithful money-flow equivalent; no clone/trademark claims |
@@ -227,7 +227,9 @@ Each unit lists: purpose, public interface, key dependencies, reuse source.
   logs P&L. **Live path is unreachable unless the Section 11 double gate is satisfied**; otherwise every order routes to
   the paper simulator and any direct live call raises a guard error. Rules (config-driven): buy on bullish flip +
   optional dip; sell at profit target after fees OR on bearish flip; optional trailing stop, time exit, max hold.
-  Interface: `on_signal(event)`, `paper_fill(...)`, `_live_order(...)` (guarded). Deps: ccxt.
+  Interface: `on_signal(event)`, `paper_fill(...)`, `_live_order(...)` (guarded). Deps: ccxt. Supported exchanges
+  (config targets, each covered by config validation + a connection smoke): Coinbase, Kraken, Binance, Bybit, BloFin,
+  BitGet via CCXT.
 - **`agents/alert_agent.py`** — `send(event)` fan-out to Telegram (python-telegram-bot), Discord (webhook), email
   (smtplib); per-channel toggle, rich formatting; scanner alerts attach a **Plotly chart image (kaleido)** with a
   **TradingView chart-link fallback** if image generation is unavailable. Reuses existing `TELEGRAM_BOT_TOKEN` by name.
@@ -263,7 +265,9 @@ watchlist** (not a reduced set). The Python `scanner_agent` handles hundreds-sca
 For each indicator: write Pine v6 source, **compile-verify against live TradingView** via the MCP (`pine_smart_compile` /
 `pine_check`) until error-free, capture the compile log/screenshot, then save as a new slot. If MCP automation cannot
 create the slot (the 2026 floating-dialog UI is unreliable for new slots), the accepted fallback is: committed source +
-compile evidence + one-click manual-save steps documented in the README. This fallback satisfies done.
+compile evidence + one-click manual-save steps documented in the README. This fallback satisfies done. If TradingView/MCP
+**compile access itself** is unavailable at build time, the fallback is a local Pine syntax check + committed source,
+with MCP compile-verification completed and logged as soon as the connection is available.
 
 ---
 
@@ -295,7 +299,8 @@ Dark theme, mobile-friendly (cards stack, sidebar collapses).
 `config.yaml` (pydantic-validated) drives everything: exchange, watchlist (+ import/export path), timeframes (primary +
 confirmation), scan interval, risk (`risk_pct`, max exposure, daily cap, drawdown stop), executor rules (profit target,
 dip filter, trailing stop, max hold), per-exchange fees, alert channel toggles, persistence backend, LLM co-pilot toggle
-+ provider, Pine scanner watchlist. **No hard-coded values anywhere.**
++ provider, Pine scanner watchlist. **No hard-coded user strategy, credential, exchange, or risk parameters** outside the validated
+pydantic defaults.
 
 ### Secrets handling (strict, for a public repo)
 - **During implementation**, no secret *value* is ever read, printed, copied, committed, or reused. Only environment
@@ -309,6 +314,8 @@ dip filter, trailing stop, max hold), per-exchange fees, alert channel toggles, 
 - The live `create_order` path is **unreachable** unless **both** `PAPER_TRADING=false` **and** a separate
   `ENABLE_LIVE_TRADING=true` are explicitly set. With either unset, the executor routes to the paper simulator and a
   direct live call raises a guard error.
+- **Credential isolation:** in paper mode the executor instantiates **only public/unauthenticated CCXT clients**;
+  authenticated/private clients are never constructed and live credentials are never loaded unless both gates are true.
 - **Tests prove** that: (a) under default config, the order path never calls the ccxt `create_order` (mocked, asserted
   not-called); (b) setting only `PAPER_TRADING=false` (without `ENABLE_LIVE_TRADING`) still blocks live; (c) the live
   exchange adapter is **not instantiated** under test/CI, and **CI/test environments carry no exchange credentials**, so
@@ -344,7 +351,8 @@ read-only sandbox: `codex exec review` for code stages, or piped rubric for Gate
 secrets** (enforced by `.gitignore` + the pre-commit secret scan). Codex returns findings classified **BLOCKING /
 MEDIUM / LOW**. Every BLOCKING is fixed and re-reviewed until clean. Every **MEDIUM/LOW is either fixed now or recorded
 in `BUILD_REPORT.md` with owner and rationale.** Each gate's verdict is saved to `reviews/gate-N-codex.md` and surfaced
-to the user. Only a **PASS (no BLOCKING)** advances the build.
+to the user. Each gate review records the exact Codex command, the commit or staged-diff reference, and a UTC
+timestamp, matching the evidence rigor of Section 1. Only a **PASS (no BLOCKING)** advances the build.
 
 | Gate | Slice reviewed |
 |---|---|
@@ -428,3 +436,14 @@ handed to the user for formal approval.
 | Live-run evidence unspecified (LOW) | DoD item 3 now names command, UTC timestamp, symbols, dashboard URL/status, artifacts. |
 | STRATEGY.md independence/trademark (LOW) | Section 15.1 + 17 require independent-implementation wording, no trademark claims. |
 | Items 2 and 9 add most risk (LOW) | Item 2 mitigated by fallback evidence; item 9 strengthened to pre-commit AND CI scanning. |
+
+### r2 -> r3 (post-PASS polish; Gate 0 already returned PASS, zero BLOCKING)
+
+| Codex finding (severity) | Resolution in r3 |
+|---|---|
+| Default exchange vs master brief list (MEDIUM) | Section 3 + 7 now list Coinbase, Kraken, Binance, Bybit, BloFin, BitGet as supported config targets with config validation + per-exchange connection smoke. |
+| Credential isolation in paper mode (MEDIUM) | Section 11 adds: paper mode instantiates only public/unauthenticated CCXT clients; private clients/live creds never loaded unless both gates true. |
+| "approved scope reduction" wording (MEDIUM) | Section 2 reworded to "proposed scope reduction, accepted at Gate 0 PASS". |
+| "No hard-coded values anywhere" too absolute (LOW) | Section 11 reworded to "no hard-coded user strategy, credential, exchange, or risk parameters outside validated pydantic defaults". |
+| Pine compile-access dependency (LOW) | Section 8 adds a fallback when MCP compile access itself is unavailable (local syntax check + deferred MCP verify). |
+| Per-gate evidence rigor (LOW) | Section 14 now requires each gate review to record the exact command, commit/diff reference, and UTC timestamp. |
