@@ -1,0 +1,38 @@
+# Secrets - NEVER commit
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Data, logs, runtime
+logs/
+*.log
+data/
+*.db
+*.sqlite
+*.sqlite3
+backtest_results/
+*.csv
+!tests/**/*.csv
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Streamlit
+.streamlit/secrets.toml
