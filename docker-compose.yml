@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+  suite:
+    build: .
+    container_name: cryptochucker_suite
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: unless-stopped
+
+  dashboard:
+    build: .
+    container_name: cryptochucker_dashboard
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    ports:
+      - "8501:8501"
+    command: ["streamlit", "run", "agents/dashboard.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    restart: unless-stopped
