@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 
 class DataCfg(BaseModel):
@@ -61,6 +61,57 @@ class WatchlistCfg(BaseModel):
     whitelist: list[str] = Field(default_factory=list)
 
 
+class ExecutorCfg(BaseModel):
+    """Paper/live executor trade-management parameters."""
+
+    profit_target_pct: float = Field(0.06, gt=0, description="Net profit target as a fraction (e.g. 0.06 = 6%)")
+    use_dip_filter: bool = True
+    trailing_stop_pct: float = Field(0.03, ge=0, description="Trailing stop distance as a fraction; 0 disables it")
+    max_hold_hours: int = Field(48, ge=1, description="Maximum hours to hold a position before forced exit")
+
+
+class _ExchangeFeeCfg(BaseModel):
+    """Per-exchange fee rates."""
+
+    maker: float = Field(default=0.0005, ge=0)
+    taker: float = Field(default=0.001, ge=0)
+
+
+class FeesCfg(BaseModel):
+    """Validated fee table: exchange name -> {maker, taker} rates.
+
+    Config YAML format::
+
+        fees:
+          blofin: {maker: 0.0002, taker: 0.0006}
+          binance: {maker: 0.0002, taker: 0.0004}
+
+    Internally stored as ``rates: dict[str, dict[str, float]]`` so callers
+    can do ``cfg.fees.rates.get(exchange, DEFAULT)``.
+    """
+
+    rates: dict[str, dict[str, float]] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_flat_dict(cls, data: object) -> object:
+        """Allow the YAML to supply the fee mapping directly at the FeesCfg level.
+
+        When ``config.yaml`` writes::
+
+            fees:
+              blofin: {maker: 0.0002, taker: 0.0006}
+
+        pydantic receives ``{"blofin": {"maker": 0.0002, "taker": 0.0006}}``
+        as the value for the ``fees`` field.  We normalise that into
+        ``{"rates": <the dict>}`` so the model validates cleanly.
+        """
+        if isinstance(data, dict) and "rates" not in data:
+            # Treat the whole dict as the rates mapping
+            return {"rates": data}
+        return data
+
+
 class Config(BaseModel):
     exchange: str = "blofin"
     paper_trading: bool = True
@@ -70,6 +121,8 @@ class Config(BaseModel):
     scanner: ScannerCfg = Field(default_factory=ScannerCfg)
     alerts: AlertsCfg = Field(default_factory=AlertsCfg)
     watchlist: WatchlistCfg = Field(default_factory=WatchlistCfg)
+    executor: ExecutorCfg = Field(default_factory=ExecutorCfg)
+    fees: FeesCfg = Field(default_factory=FeesCfg)
     # remaining sections kept permissive dicts for the sample; tighten per stage as used
     model_config = {"extra": "allow"}
 
