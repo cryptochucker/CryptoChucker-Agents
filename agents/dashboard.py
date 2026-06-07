@@ -380,22 +380,27 @@ with tab_overview:
 
     with c_chart:
         st.markdown(f"#### BTC/USDT  {sel_tf}  Money Line")
-        ml_df = _make_money_line_df(
-            symbol="BTC/USDT",
-            tf=sel_tf,
-            exchange=cfg.exchange,
-        )
-        if ml_df is not None:
-            try:
-                st.plotly_chart(
-                    _candle_fig(ml_df, "BTC/USDT"),
-                    use_container_width=True,
-                    config={"displayModeBar": False},
-                )
-            except Exception as exc:
-                st.info(f"Chart render error: {exc}")
+        if st.button("Load live chart", key="load_live_chart"):
+            st.session_state["live_chart_requested"] = True
+        if st.session_state.get("live_chart_requested"):
+            ml_df = _make_money_line_df(
+                symbol="BTC/USDT",
+                tf=sel_tf,
+                exchange=cfg.exchange,
+            )
+            if ml_df is not None:
+                try:
+                    st.plotly_chart(
+                        _candle_fig(ml_df, "BTC/USDT"),
+                        use_container_width=True,
+                        config={"displayModeBar": False},
+                    )
+                except Exception as exc:
+                    st.info(f"Chart render error: {exc}")
+            else:
+                st.info("No chart data available. Check exchange connectivity.")
         else:
-            st.info("No chart data available. Check exchange connectivity.")
+            st.info("Click 'Load live chart' to fetch live OHLCV.")
 
     with c_sigs:
         st.markdown("#### Top signals")
@@ -470,7 +475,25 @@ with tab_scanner:
     # Prefer stored scan rows; fall back to signal rows when scans are absent.
     if scans_raw:
         st.markdown("#### Stored scans")
-        scan_df = pd.DataFrame(scans_raw)
+        # Decode JSON payload column into flattened fields.
+        # Store.save_scan() stores arbitrary dicts as JSON in the `payload` column.
+        # Each row may contain {symbol, tf, state, strength, price} inside payload.
+        import json as _json
+        decoded_rows: list[dict] = []
+        for row in scans_raw:
+            base = dict(row)
+            raw_payload = base.pop("payload", None)
+            if raw_payload:
+                try:
+                    payload_obj = _json.loads(raw_payload)
+                except Exception:
+                    payload_obj = {}
+                if isinstance(payload_obj, dict):
+                    for field in ("symbol", "tf", "state", "strength", "price"):
+                        if field not in base and field in payload_obj:
+                            base[field] = payload_obj[field]
+            decoded_rows.append(base)
+        scan_df = pd.DataFrame(decoded_rows)
         # Rename common scan columns; tolerate varying schema from store
         scan_df = scan_df.rename(columns={
             "symbol": "Symbol", "tf": "TF", "state": "State",

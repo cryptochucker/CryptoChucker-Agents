@@ -261,3 +261,77 @@ def test_no_sdk_import_when_disabled(disabled_cfg):
 
     assert "anthropic" not in sys.modules, "anthropic was imported despite copilot being disabled"
     assert "openai" not in sys.modules, "openai was imported despite copilot being disabled"
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM 4 -- Robust _parse_response: non-object JSON and non-numeric confidence
+# ---------------------------------------------------------------------------
+
+
+def test_parse_response_json_array_returns_safe_default():
+    """A JSON array (non-object) must not raise; must return a skip-safe default."""
+    result = _parse_response('[{"decision": "BUY", "confidence": 0.9, "reason": "test"}]')
+    assert result["decision"] == "SKIP"
+    assert result["confidence"] == 0.0
+    assert "unparseable" in result["reason"]
+
+
+def test_parse_response_json_string_returns_safe_default():
+    """A bare JSON string (non-object) must return the safe default, not raise."""
+    result = _parse_response('"just a string"')
+    assert result["decision"] == "SKIP"
+    assert result["confidence"] == 0.0
+    assert "unparseable" in result["reason"]
+
+
+def test_parse_response_json_number_returns_safe_default():
+    """A bare JSON number (non-object) must return the safe default, not raise."""
+    result = _parse_response("42")
+    assert result["decision"] == "SKIP"
+    assert result["confidence"] == 0.0
+
+
+def test_parse_response_non_numeric_confidence_coerces_to_zero():
+    """Non-numeric confidence value (e.g. 'high') must coerce to 0.0, not raise."""
+    raw = '{"decision": "BUY", "confidence": "high", "reason": "test"}'
+    result = _parse_response(raw)
+    assert result["confidence"] == pytest.approx(0.0)
+    assert result["decision"] == "BUY"
+
+
+def test_parse_response_none_confidence_coerces_to_zero():
+    """JSON null confidence must coerce to 0.0."""
+    raw = '{"decision": "SKIP", "confidence": null, "reason": "test"}'
+    result = _parse_response(raw)
+    assert result["confidence"] == pytest.approx(0.0)
+
+
+def test_parse_response_missing_all_keys_returns_safe_values():
+    """An empty JSON object must return safe defaults for all three keys."""
+    result = _parse_response("{}")
+    assert result["decision"] == "SKIP"
+    assert result["confidence"] == pytest.approx(0.0)
+    assert isinstance(result["reason"], str)
+
+
+def test_parse_response_never_raises_on_garbage():
+    """_parse_response must never raise regardless of input content."""
+    garbage_inputs = [
+        "",
+        "   ",
+        "```",
+        "NaN",
+        "null",
+        "true",
+        "[1, 2, 3]",
+        '{"decision": [], "confidence": {}, "reason": 42}',
+    ]
+    for bad in garbage_inputs:
+        result = _parse_response(bad)
+        # Must always return a dict with the three required keys
+        assert "decision" in result, f"Missing 'decision' key for input: {bad!r}"
+        assert "confidence" in result, f"Missing 'confidence' key for input: {bad!r}"
+        assert "reason" in result, f"Missing 'reason' key for input: {bad!r}"
+        assert isinstance(result["confidence"], float), (
+            f"confidence must be float for input: {bad!r}"
+        )

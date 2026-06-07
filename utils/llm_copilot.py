@@ -71,29 +71,63 @@ def _build_prompt(signal: dict, cfg_dict: dict) -> str:
     return _redact(raw)
 
 
+_SAFE_DEFAULT: dict[str, Any] = {
+    "decision": "skip",
+    "confidence": 0.0,
+    "reason": "unparseable response",
+}
+
+
 def _parse_response(text: str) -> dict[str, Any]:
-    """Parse and validate the LLM's JSON response."""
+    """Parse and validate the LLM's JSON response.
+
+    Never raises. Returns a safe default on any parse or coercion failure so
+    callers always receive a well-formed dict with decision/confidence/reason.
+
+    Robustness rules applied in order:
+    1. Strip markdown fences.
+    2. Attempt full JSON parse; on failure try to extract the first ``{...}`` block.
+    3. If the parsed value is not a dict (e.g. a JSON array or bare string), fall
+       back to the safe default immediately.
+    4. Coerce ``confidence`` to float; default 0.0 on any coercion failure
+       (handles string, None, missing key).
+    5. Clamp confidence to [0.0, 1.0].
+    6. Normalise decision to upper-case; unknown values map to "SKIP".
+    """
     # Strip markdown fences if present
     text = re.sub(r"```(?:json)?", "", text).strip().strip("`")
+
+    obj: Any = None
     try:
         obj = json.loads(text)
     except json.JSONDecodeError:
         # Best-effort: extract first {...} block
         match = re.search(r"\{[^{}]+\}", text, re.DOTALL)
         if match:
-            obj = json.loads(match.group())
-        else:
-            return {
-                "decision": "SKIP",
-                "confidence": 0.0,
-                "reason": f"unparseable response: {text[:120]}",
-            }
+            try:
+                obj = json.loads(match.group())
+            except json.JSONDecodeError:
+                obj = None
+
+    # Guard: parsed value must be a dict; anything else (array, string, None) is
+    # treated as an unparseable response.
+    if not isinstance(obj, dict):
+        return {
+            "decision": "SKIP",
+            "confidence": 0.0,
+            "reason": f"unparseable response: {text[:120]}",
+        }
 
     decision = str(obj.get("decision", "SKIP")).upper()
     if decision not in {"BUY", "SKIP", "AVOID"}:
         decision = "SKIP"
-    confidence = float(obj.get("confidence", 0.0))
+
+    try:
+        confidence = float(obj.get("confidence", 0.0))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        confidence = 0.0
     confidence = max(0.0, min(1.0, confidence))
+
     reason = str(obj.get("reason", ""))
     return {"decision": decision, "confidence": confidence, "reason": reason}
 

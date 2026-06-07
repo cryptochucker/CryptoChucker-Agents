@@ -96,6 +96,7 @@ def run_backtest(
     money_line_length: int = 8,
     smooth: int = 14,
     slope_len: int = 3,
+    fee_rate: float = 0.0,
 ) -> BacktestResult:
     """Run a Money Line flip backtest on *df*.
 
@@ -112,6 +113,18 @@ def run_backtest(
         Bar frequency string used for Sharpe/Sortino annualisation.
     money_line_length / smooth / slope_len:
         Money Line parameters (overridden by cfg.signal if cfg is not None).
+    fee_rate:
+        Taker fee rate applied symmetrically to both entry and exit legs.
+        Default 0.0 (no transaction costs). Example: 0.001 for 0.1% taker fee.
+
+        Trade PnL formula (net of both legs):
+            entry_fee  = entry_price * qty * fee_rate
+            exit_fee   = exit_price  * qty * fee_rate
+            pnl        = (exit_price - entry_price) * qty - entry_fee - exit_fee
+
+        Win rate  = fraction of completed trades where net pnl > 0.
+        Profit factor = sum(positive net pnls) / abs(sum(negative net pnls));
+            returns float('inf') when there are no losing trades.
 
     Returns
     -------
@@ -129,20 +142,27 @@ def run_backtest(
     bear_flip = ml_df["flip_detected"] & (ml_df["state"] == "BEARISH")
 
     # ------------------------------------------------------------------
-    # Mark-to-market simulation (BLOCKING 1)
+    # Mark-to-market simulation
     # ------------------------------------------------------------------
     # State tracked bar-by-bar:
-    #   cash       -- uninvested cash
+    #   cash         -- uninvested cash
     #   position_qty -- number of units held (0 when flat)
     # Every bar: equity[i] = cash + position_qty * close[i]
-    # Entry:  deduct cost + entry fee from cash, record position_qty
-    # Exit:   realise proceeds - exit fee into cash, zero position_qty
+    # Entry:  invest all cash; deduct entry fee from cash so units acquired
+    #         are slightly fewer (effective spend = cash / (1 + fee_rate)).
+    # Exit:   sell all units; deduct exit fee from gross proceeds.
+    #
+    # Net trade PnL (both legs):
+    #   qty         = (cash_at_entry / entry_price) / (1 + fee_rate)
+    #   entry_fee   = entry_price * qty * fee_rate
+    #   exit_fee    = exit_price  * qty * fee_rate
+    #   pnl         = (exit_price - entry_price) * qty - entry_fee - exit_fee
     # ------------------------------------------------------------------
-    FEE = 0.001  # symmetric taker fee (0.1 %); no external cfg supplied yet
 
     cash = float(initial_capital)
     position_qty = 0.0
     entry_price = 0.0
+    entry_fee_paid = 0.0
     entry_idx: int | None = None
     in_trade = False
 
@@ -158,21 +178,23 @@ def run_backtest(
 
         if i > 0:  # skip entry/exit signals on the very first bar
             if not in_trade and bull_flip.iloc[i]:
-                # Entry: invest all cash; taker fee reduces units acquired
-                fee_paid = cash * FEE
-                spend = cash - fee_paid
-                position_qty = spend / close_i
+                # Entry: buy as many units as cash allows, net of entry fee.
+                # qty * price * (1 + fee_rate) = cash
+                # => qty = cash / (price * (1 + fee_rate))
+                position_qty = cash / (close_i * (1.0 + fee_rate))
+                entry_fee_paid = close_i * position_qty * fee_rate
                 cash = 0.0
                 in_trade = True
                 entry_price = close_i
                 entry_idx = i
 
             elif in_trade and bear_flip.iloc[i]:
-                # Exit: sell all units; deduct taker fee
+                # Exit: receive gross proceeds, deduct exit fee.
+                exit_fee = close_i * position_qty * fee_rate
                 gross = position_qty * close_i
-                fee_paid = gross * FEE
-                net_proceeds = gross - fee_paid
-                pnl = net_proceeds - (position_qty * entry_price)
+                net_proceeds = gross - exit_fee
+                # Net PnL: price gain/loss on qty, minus both fee legs.
+                pnl = (close_i - entry_price) * position_qty - entry_fee_paid - exit_fee
                 ret = (close_i - entry_price) / entry_price
                 trade_records.append(
                     {
@@ -255,6 +277,7 @@ def grid_search(
     *,
     initial_capital: float = 10_000.0,
     freq: str = "4h",
+    fee_rate: float = 0.0,
 ) -> pd.DataFrame:
     """Run :func:`run_backtest` over every combination in *param_grid*.
 
@@ -267,6 +290,8 @@ def grid_search(
         ``money_line_length``, ``smooth``, ``slope_len``.
     initial_capital / freq:
         Passed through to :func:`run_backtest`.
+    fee_rate:
+        Taker fee rate passed through to every :func:`run_backtest` call.
 
     Returns
     -------
@@ -280,7 +305,7 @@ def grid_search(
     rows: list[dict] = []
     for combo in combos:
         kwargs = dict(zip(keys, combo))
-        result = run_backtest(df, initial_capital=initial_capital, freq=freq, **kwargs)
+        result = run_backtest(df, initial_capital=initial_capital, freq=freq, fee_rate=fee_rate, **kwargs)
         rows.append(
             {
                 **kwargs,

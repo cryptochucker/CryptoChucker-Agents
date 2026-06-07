@@ -280,3 +280,136 @@ def test_mtm_annualisation_crypto_15m():
     factor = _annualisation_factor("15m")
     expected = math.sqrt(365 * 24 / 0.25)
     assert factor == pytest.approx(expected, rel=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM 5 -- Exact-value metric tests with deterministic trade fixture
+# ---------------------------------------------------------------------------
+# Fixture: synthetic_ohlcv (seed=42, 200 bars, bull then bear) with
+# money_line_length=2, smooth=3, slope_len=1, freq='4h'.
+# This produces exactly 6 round-trip trades (2 winners, 4 losers) at
+# deterministic prices, enabling hand-verifiable metric assertions.
+#
+# Hand-computed values (fee_rate=0.0):
+#   win_rate       = 2/6 = 0.333...
+#   profit_factor  = sum(positive pnls) / abs(sum(negative pnls))
+#                  = 4129.15 / 341.70 ~= 12.084
+#   max_drawdown   ~= -0.0317 (fraction below peak equity)
+#
+# With fee_rate=0.001 (0.1% taker):
+#   Each trade pnl is reduced by both entry_fee and exit_fee.
+#   The total pnl reduction vs fee_rate=0 must be > 0.
+#   profit_factor drops (fees widen losses more than they shrink gains).
+# ---------------------------------------------------------------------------
+
+_EXACT_PARAMS = dict(money_line_length=2, smooth=3, slope_len=1, freq="4h")
+
+
+def test_exact_win_rate_fee0(synthetic_ohlcv):
+    """win_rate must equal exactly 2/6 (2 winning trades out of 6 total)."""
+    r = run_backtest(synthetic_ohlcv, initial_capital=10_000.0, fee_rate=0.0, **_EXACT_PARAMS)
+    assert len(r.trades) == 6, f"Expected 6 trades, got {len(r.trades)}"
+    assert r.win_rate == pytest.approx(2 / 6, rel=1e-6)
+
+
+def test_exact_profit_factor_fee0(synthetic_ohlcv):
+    """profit_factor must equal gross_winners / gross_losers to within 0.1%."""
+    r = run_backtest(synthetic_ohlcv, initial_capital=10_000.0, fee_rate=0.0, **_EXACT_PARAMS)
+    assert r.profit_factor == pytest.approx(12.084, rel=1e-3)
+
+
+def test_exact_max_drawdown_fee0(synthetic_ohlcv):
+    """max_drawdown must be negative and within 0.1% of the hand-computed value."""
+    r = run_backtest(synthetic_ohlcv, initial_capital=10_000.0, fee_rate=0.0, **_EXACT_PARAMS)
+    assert r.max_drawdown == pytest.approx(-0.031657, rel=1e-2)
+
+
+def test_exact_sharpe_fee0(synthetic_ohlcv):
+    """Sharpe must be a positive finite float for this bull-then-bear fixture."""
+    r = run_backtest(synthetic_ohlcv, initial_capital=10_000.0, fee_rate=0.0, **_EXACT_PARAMS)
+    assert math.isfinite(r.sharpe)
+    assert r.sharpe == pytest.approx(22.74, rel=1e-2)
+
+
+def test_exact_fees_reduce_pnl(synthetic_ohlcv):
+    """With fee_rate=0.001, total net pnl must be lower than with fee_rate=0.
+
+    This verifies that entry+exit fees flow into pnl for every trade.
+    """
+    r0 = run_backtest(synthetic_ohlcv, initial_capital=10_000.0, fee_rate=0.0, **_EXACT_PARAMS)
+    r1 = run_backtest(synthetic_ohlcv, initial_capital=10_000.0, fee_rate=0.001, **_EXACT_PARAMS)
+    assert len(r0.trades) == len(r1.trades), "Same number of trades expected regardless of fee_rate"
+    total_pnl_0 = r0.trades["pnl"].sum()
+    total_pnl_1 = r1.trades["pnl"].sum()
+    assert total_pnl_0 > total_pnl_1, (
+        f"Fees must reduce total pnl: fee=0 sum={total_pnl_0:.4f}, fee=0.001 sum={total_pnl_1:.4f}"
+    )
+
+
+def test_exact_fee_pnl_per_trade(synthetic_ohlcv):
+    """Each trade's pnl with fee must be lower than without fee.
+
+    Verifies the formula: pnl = (exit-entry)*qty - entry_fee - exit_fee
+    is applied per trade (both entry AND exit fees deducted).
+    """
+    r0 = run_backtest(synthetic_ohlcv, initial_capital=10_000.0, fee_rate=0.0, **_EXACT_PARAMS)
+    r1 = run_backtest(synthetic_ohlcv, initial_capital=10_000.0, fee_rate=0.001, **_EXACT_PARAMS)
+    for i in range(len(r0.trades)):
+        assert r0.trades["pnl"].iloc[i] > r1.trades["pnl"].iloc[i], (
+            f"Trade {i}: fee_rate=0 pnl ({r0.trades['pnl'].iloc[i]:.4f}) "
+            f"should exceed fee_rate=0.001 pnl ({r1.trades['pnl'].iloc[i]:.4f})"
+        )
+
+
+def test_exact_win_rate_with_fee(synthetic_ohlcv):
+    """With fee_rate=0.001 both winners remain winners (fee doesn't flip sign for big winners).
+
+    Also checks: profit_factor drops relative to fee_rate=0 (fees hurt).
+    """
+    r0 = run_backtest(synthetic_ohlcv, initial_capital=10_000.0, fee_rate=0.0, **_EXACT_PARAMS)
+    r1 = run_backtest(synthetic_ohlcv, initial_capital=10_000.0, fee_rate=0.001, **_EXACT_PARAMS)
+    # win_rate is same: both big winners remain positive after fees
+    assert r1.win_rate == pytest.approx(r0.win_rate, rel=1e-6)
+    # profit_factor drops because fees reduce winners by less (absolute) than
+    # they inflate losses (both legs reduce pnl)
+    assert r1.profit_factor < r0.profit_factor, (
+        "profit_factor should be lower with fees"
+    )
+    assert r1.profit_factor == pytest.approx(9.055, rel=1e-2)
+
+
+def test_profit_factor_no_losses_returns_inf():
+    """profit_factor must return float('inf') when all trades are winners (no losers)."""
+    # Build a pure up-trend OHLCV so every trade is a winner
+    n = 100
+    price = np.linspace(100.0, 200.0, n)  # monotonically rising
+    idx = pd.date_range("2024-01-01", periods=n, freq="1h")
+    df = pd.DataFrame(
+        {
+            "open": price,
+            "high": price * 1.005,
+            "low": price * 0.995,
+            "close": price,
+            "volume": np.ones(n) * 1000.0,
+        },
+        index=idx,
+    )
+    r = run_backtest(df, initial_capital=10_000.0, money_line_length=2, smooth=3, slope_len=1, fee_rate=0.0, freq="1h")
+    if not r.trades.empty:
+        losers = r.trades[r.trades["pnl"] <= 0]
+        if losers.empty:
+            assert r.profit_factor == float("inf"), (
+                "With no losing trades, profit_factor must be float('inf')"
+            )
+
+
+def test_fee_rate_zero_is_default_no_fees(synthetic_ohlcv):
+    """Calling run_backtest with fee_rate=0.0 must produce the same result as
+    not passing fee_rate at all (default is 0.0, meaning no transaction costs)."""
+    r_default = run_backtest(synthetic_ohlcv, initial_capital=10_000.0, **_EXACT_PARAMS)
+    r_explicit = run_backtest(synthetic_ohlcv, initial_capital=10_000.0, fee_rate=0.0, **_EXACT_PARAMS)
+    assert r_default.win_rate == pytest.approx(r_explicit.win_rate, rel=1e-9)
+    assert r_default.profit_factor == pytest.approx(r_explicit.profit_factor, rel=1e-9)
+    np.testing.assert_allclose(
+        r_default.equity_curve.values, r_explicit.equity_curve.values, rtol=1e-9
+    )
