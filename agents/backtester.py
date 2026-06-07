@@ -253,7 +253,14 @@ def run_backtest(
         win_rate = float(len(winners) / len(trades_df))
         gross_profit = winners["pnl"].sum() if not winners.empty else 0.0
         gross_loss = losers["pnl"].abs().sum() if not losers.empty else 0.0
-        profit_factor = float(gross_profit / gross_loss) if gross_loss > 0 else float("inf")
+        # Return inf only when there are actual profits with no losses.
+        # When both are 0 (all breakeven trades) return 0.0.
+        if gross_loss > 0:
+            profit_factor = float(gross_profit / gross_loss)
+        elif gross_profit > 0:
+            profit_factor = float("inf")
+        else:
+            profit_factor = 0.0
 
     return BacktestResult(
         sharpe=sharpe,

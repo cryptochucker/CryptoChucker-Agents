@@ -23,7 +23,7 @@ class LlmCopilotCfg(BaseModel):
 class PineCfg(BaseModel):
     """Pine Script integration settings."""
 
-    scanner_symbols: list[str] = Field(default_factory=list)
+    scanner_symbols: list[str] = Field(default_factory=list, max_length=30)
 
 
 class DataCfg(BaseModel):

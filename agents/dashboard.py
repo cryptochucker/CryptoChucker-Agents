@@ -7,6 +7,7 @@ Guards for empty store (fresh DB) so it renders without data.
 """
 from __future__ import annotations
 
+import glob as _glob
 import os
 import sys
 from datetime import datetime, timezone
@@ -80,10 +81,26 @@ st.markdown(
 
 @st.cache_resource
 def _get_store():
-    """Return an initialised Store instance."""
+    """Return an initialised Store instance.
+
+    Path resolution order (first match wins):
+    1. ``STORE_PATH`` env var  -- lets tests/dev override without touching config.
+    2. ``cfg.persistence.sqlite_path`` from config.yaml.
+    3. Hard-coded fallback ``data/cryptochucker.db``.
+    """
     from utils.store import Store
 
-    db_path = os.environ.get("STORE_PATH", "data/cryptochucker.db")
+    # Config is already cached; load it separately here to avoid a circular
+    # dependency with the module-level _get_config() call below.
+    try:
+        from utils.config_schema import load_config as _lc
+
+        _cfg = _lc("config.yaml")
+        cfg_path = _cfg.persistence.sqlite_path
+    except Exception:
+        cfg_path = "data/cryptochucker.db"
+
+    db_path = os.environ.get("STORE_PATH", cfg_path)
     s = Store(path=db_path)
     try:
         s.init()
@@ -446,22 +463,54 @@ with tab_overview:
             st.info("No open positions.")
 
     with c_alert:
-        st.markdown("#### Recent signals")
+        st.markdown("#### Recent alerts")
         if signals_raw:
             for row in signals_raw[:8]:
                 state = row.get("state", "BEARISH")
                 color = BULL if state == "BULLISH" else BEAR
                 sym = row.get("symbol", "?")
                 tf = row.get("tf", "?")
+                strength = int(row.get("strength") or 0)
                 ts = str(row.get("ts", ""))[:16]
+                flip_label = "BULLISH flip" if state == "BULLISH" else "BEARISH flip"
                 st.markdown(
                     f'<div class="alert-row" style="border-left-color:{color}">'
                     f'<span style="color:{MUTE}">{ts}</span>&nbsp;&nbsp;'
-                    f'{state} {sym} {tf}</div>',
+                    f'<span style="color:{color};font-weight:700">{flip_label}</span>'
+                    f'&nbsp;&nbsp;{sym} {tf}'
+                    f'&nbsp;&nbsp;<span style="color:{MUTE}">str {strength}</span>'
+                    f'</div>',
                     unsafe_allow_html=True,
                 )
         else:
-            st.info("No recent signals.")
+            st.info("No recent alerts.")
+
+    # Live logs expander -- tail the rotating log file (last ~30 lines).
+    with st.expander("Live logs", expanded=False):
+        log_lines: str | None = None
+        # Look for *.log files under a logs/ directory relative to the script or cwd.
+        _script_dir = os.path.dirname(os.path.abspath(__file__))
+        _repo_root = os.path.dirname(_script_dir)
+        for _logs_dir in (
+            os.path.join(_repo_root, "logs"),
+            os.path.join(os.getcwd(), "logs"),
+        ):
+            _pattern = os.path.join(_logs_dir, "*.log")
+            _matches = _glob.glob(_pattern)
+            if _matches:
+                # Pick the most-recently modified log file.
+                _log_file = max(_matches, key=os.path.getmtime)
+                try:
+                    with open(_log_file, encoding="utf-8", errors="replace") as _fh:
+                        _all_lines = _fh.readlines()
+                    log_lines = "".join(_all_lines[-30:])
+                except Exception:
+                    pass
+                break
+        if log_lines:
+            st.code(log_lines, language="log")
+        else:
+            st.code("# no log file found yet -- logs will appear here once agents run", language="log")
 
 # ---------------------------------------------------------------------------
 # Scanner tab

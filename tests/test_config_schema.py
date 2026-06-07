@@ -399,3 +399,20 @@ def test_config_has_persistence_llm_copilot_pine_fields(tmp_path):
     assert cfg.persistence.backend == "sqlite"
     assert cfg.llm_copilot.enabled is False
     assert cfg.pine.scanner_symbols == ["BTC/USDT"]
+
+
+# ---- LOW 3: PineCfg.scanner_symbols capped at 30 ----
+
+
+def test_pine_cfg_30_symbols_accepted():
+    """Exactly 30 symbols must be accepted (boundary value)."""
+    syms = [f"SYM{i}/USDT" for i in range(30)]
+    p = PineCfg(scanner_symbols=syms)
+    assert len(p.scanner_symbols) == 30
+
+
+def test_pine_cfg_31_symbols_raises():
+    """31 symbols must raise a ValidationError (Pine Money Scanner hard limit is 30)."""
+    syms = [f"SYM{i}/USDT" for i in range(31)]
+    with pytest.raises((ValueError, ValidationError)):
+        PineCfg(scanner_symbols=syms)
