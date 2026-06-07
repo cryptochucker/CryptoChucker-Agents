@@ -1,0 +1,39 @@
+//@version=6
+indicator("CryptoChucker - Money Line v1", overlay=true)
+
+// ---- Inputs ----------------------------------------------------------------
+length   = input.int(8,  "VWMA length",   minval=1)
+smooth   = input.int(14, "EMA smooth",    minval=1)
+slopeLen = input.int(3,  "Slope length",  minval=1)
+
+// ---- Money Line computation ------------------------------------------------
+// Typical price
+tp   = (high + low + close) / 3.0
+
+// Volume-weighted moving average of typical price
+vwma = math.sum(tp * volume, length) / math.sum(volume, length)
+
+// EMA smoothing of the VWMA
+ml   = ta.ema(vwma, smooth)
+
+// Slope: SMA of bar-to-bar change in the money line
+slope = ta.sma(ta.change(ml), slopeLen)
+bull  = slope >= 0
+
+// ---- Visuals ---------------------------------------------------------------
+mlColor = bull ? color.new(color.teal, 0) : color.new(color.red, 0)
+plot(ml, "Money Line", color=mlColor, linewidth=2)
+
+// Flip markers
+flipUp = bull and not bull[1]
+flipDn = (not bull) and bull[1]
+plotshape(flipUp, title="Bull flip", style=shape.triangleup,
+          location=location.belowbar, color=color.teal, size=size.small)
+plotshape(flipDn, title="Bear flip", style=shape.triangledown,
+          location=location.abovebar, color=color.red,  size=size.small)
+
+// ---- Alerts ----------------------------------------------------------------
+alertcondition(flipUp, "Money Line Bullish Flip",
+               "Money Line flipped BULLISH on {{ticker}}")
+alertcondition(flipDn, "Money Line Bearish Flip",
+               "Money Line flipped BEARISH on {{ticker}}")
