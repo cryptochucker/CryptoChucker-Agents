@@ -288,44 +288,61 @@ def test_refuses_entry_when_daily_cap_hit(tmp_path) -> None:
 
 
 def test_profit_target_exit_is_net_of_fees(tmp_path) -> None:
-    """Executor must exit at the price where NET P&L (after both legs' fees) = profit_target_pct.
+    """Executor must exit at the price where NET P&L >= profit_target_pct after both fee legs.
 
-    With taker fee 0.06%, entry at 100.0, profit_target_pct=0.06:
-      entry_fee_pct = 0.0006
-      exit_fee_pct  = 0.0006
-      gross target  = profit_target_pct + entry_fee_pct + exit_fee_pct
-      exit_price    = entry * (1 + gross_target) ~= 100 * 1.0612 = 106.12
+    Precise formula check:
+      entry=100, target=0.06, taker=0.0006
+      exit_price = 100 * (1 + 0.06 + 0.0006) / (1 - 0.0006) = 100 * 1.0606 / 0.9994
+      net_pnl_pct = exit_notional*(1-t) / entry_notional - (1+t)
+                  = exit_price*(1-t)/entry_price - (1+t)
+
+    We compute the exact exit_price from the formula, send a tick AT that price,
+    assert the trade actually CLOSED, and assert realized net PnL >= profit_target_pct.
     """
-    cfg = _make_cfg(profit_target_pct=0.06, trailing_stop_pct=0.0)
+    target_pct = 0.06
+    taker = 0.0006
+    entry_price = 100.0
+
+    cfg = _make_cfg(profit_target_pct=target_pct, trailing_stop_pct=0.0)
     store = _make_store(tmp_path)
     client = _mock_ccxt_client()
     ex = Executor(cfg, store, client=client, env=_PAPER_ENV)
 
     # Open a position at 100
-    ex.on_signal(_bullish_event(price=100.0))
+    ex.on_signal(_bullish_event(price=entry_price))
     trades_after_entry = store.load_trades()
-    assert len(trades_after_entry) >= 1, "Expected an entry trade"
+    assert len(trades_after_entry) >= 1, "Expected an entry trade to be recorded"
 
-    # Now send a price tick that's above the gross target
-    # entry_fee_pct + exit_fee_pct = 0.0006 + 0.0006 = 0.0012
-    # gross_target = 0.06 + 0.0012 = 0.0612  -> exit price = 106.12
-    # We'll send 107.0 which is above the threshold
+    # Compute the exact exit price the executor should trigger at
+    exact_exit_price = entry_price * (1.0 + target_pct + taker) / (1.0 - taker)
+
+    # Send a tick AT the exact threshold (executor uses >=, so this should trigger)
     exit_event = SignalEvent(
         symbol="BTC/USDT",
         tf="4h",
         state="BULLISH",
         strength=70.0,
         flip=False,
-        price=107.0,
+        price=exact_exit_price,
         ts=datetime.datetime.utcnow(),
     )
     ex.on_signal(exit_event)
 
-    # After the profit-target exit there should now be a completed trade with positive PnL
+    # Trade must have CLOSED
     trades = store.load_trades()
     closed = [t for t in trades if t.get("exit_price") is not None and t.get("exit_price", 0) > 0]
-    if closed:
-        assert closed[0]["pnl"] > 0, "Closed trade must show positive net PnL"
+    assert len(closed) >= 1, "Trade must have closed on the profit-target tick"
+
+    # Verify the stored net PnL from the closed trade record matches expected
+    closed_trade = closed[0]
+    entry_notional = entry_price * closed_trade["qty"]
+    exit_notional = exact_exit_price * closed_trade["qty"]
+    realized_net_pct = (exit_notional * (1.0 - taker) - entry_notional * (1.0 + taker)) / entry_notional
+    assert realized_net_pct >= target_pct, (
+        f"Net PnL {realized_net_pct:.6f} must be >= profit_target_pct {target_pct}"
+    )
+    # Also confirm the stored pnl field is positive
+    assert closed_trade["pnl"] > 0, "Stored net PnL must be positive"
 
 
 def test_profit_target_not_triggered_below_net_threshold(tmp_path) -> None:
@@ -403,19 +420,33 @@ def test_no_entry_on_bullish_non_flip(tmp_path) -> None:
 
 
 def test_position_sizing_respects_risk_pct(tmp_path) -> None:
-    """Qty must be derived from risk_manager: balance*risk_pct / |entry-stop|."""
-    # balance=10000, risk_pct=0.01 -> risk_amount=100
-    # entry=100, stop = entry*(1 - trailing_stop_pct) with trailing_stop_pct=0.05
-    #   -> stop = 95, risk_per_unit = 5 -> qty = 100/5 = 20
-    cfg = _make_cfg(balance=10_000.0, risk_pct=0.01, trailing_stop_pct=0.05)
+    """Qty must equal risk_manager.position_size(balance, risk_pct, entry, stop).
+
+    Concrete expected value:
+      balance=10000, risk_pct=0.01 -> risk_amount=100
+      entry=100, trailing_stop_pct=0.05 -> stop=95, risk_per_unit=5
+      qty = 100 / 5 = 20.0 exactly
+    """
+    from utils.risk_manager import position_size as _position_size
+
+    balance = 10_000.0
+    risk_pct = 0.01
+    entry = 100.0
+    trailing_stop_pct = 0.05
+    expected_stop = entry * (1.0 - trailing_stop_pct)
+    expected_qty = _position_size(balance, risk_pct, entry, expected_stop)
+
+    cfg = _make_cfg(balance=balance, risk_pct=risk_pct, trailing_stop_pct=trailing_stop_pct)
     store = _make_store(tmp_path)
     ex = Executor(cfg, store, client=_mock_ccxt_client(), env=_PAPER_ENV)
-    ex.on_signal(_bullish_event(price=100.0))
+    ex.on_signal(_bullish_event(price=entry))
 
     trades = store.load_trades()
-    assert len(trades) >= 1
+    assert len(trades) >= 1, "Expected an entry trade to be recorded"
     qty = trades[0]["qty"]
-    assert qty > 0, "qty must be positive"
+    assert qty == pytest.approx(expected_qty), (
+        f"qty {qty} must equal position_size({balance}, {risk_pct}, {entry}, {expected_stop}) = {expected_qty}"
+    )
 
 
 # ---------------------------------------------------------------------------

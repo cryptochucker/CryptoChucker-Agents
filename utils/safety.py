@@ -60,9 +60,15 @@ def live_enabled(env: dict[str, str] | None = None) -> bool:
     Returns:
         True only when both conditions hold; False for every other combination.
     """
-    e: dict[str, str] = env if env is not None else dict(os.environ)
-    paper_is_false = str(e.get("PAPER_TRADING", "true")) == "false"
-    live_is_true = str(e.get("ENABLE_LIVE_TRADING", "false")) == "true"
+    # Read ONLY the two gate keys; never copy or iterate os.environ.
+    # When env is None we call os.environ.get() for those two keys only,
+    # so secret credential vars are never touched on the default path.
+    if env is not None:
+        paper_is_false = str(env.get("PAPER_TRADING", "true")) == "false"
+        live_is_true = str(env.get("ENABLE_LIVE_TRADING", "false")) == "true"
+    else:
+        paper_is_false = str(os.environ.get("PAPER_TRADING", "true")) == "false"
+        live_is_true = str(os.environ.get("ENABLE_LIVE_TRADING", "false")) == "true"
     return paper_is_false and live_is_true
 
 
@@ -93,17 +99,19 @@ def make_exchange_client(exchange: str, env: dict[str, str] | None = None) -> cc
     Raises:
         AttributeError: If *exchange* is not a valid ccxt exchange name.
     """
-    resolved_env: dict[str, str] = env if env is not None else dict(os.environ)
+    # Do NOT copy os.environ -- pass env (or None) to live_enabled so that
+    # only the two gate keys are read in paper mode; secret keys are never touched.
     klass = getattr(ccxt, exchange)
 
-    if live_enabled(resolved_env):
+    if live_enabled(env):
         # Both gates open -- read credentials ONLY here, never in the paper path.
         # Secret values are read here but never logged or stored.
+        src = env if env is not None else os.environ
         return klass(
             {
-                "apiKey": resolved_env.get("EXCHANGE_API_KEY", ""),
-                "secret": resolved_env.get("EXCHANGE_API_SECRET", ""),
-                "password": resolved_env.get("EXCHANGE_API_PASSWORD", ""),
+                "apiKey": src.get("EXCHANGE_API_KEY", ""),
+                "secret": src.get("EXCHANGE_API_SECRET", ""),
+                "password": src.get("EXCHANGE_API_PASSWORD", ""),
                 "enableRateLimit": True,
             }
         )

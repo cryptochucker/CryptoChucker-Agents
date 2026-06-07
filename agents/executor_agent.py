@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import datetime
 import logging
-import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -104,7 +103,10 @@ class Executor:
     ) -> None:
         self._cfg = cfg
         self._store = store
-        self._env: dict[str, str] = env if env is not None else dict(os.environ)
+        # Store env as-is (may be None).  Never copy os.environ -- the safety
+        # functions accept None and read only the two gate keys from os.environ
+        # directly, so secret credential vars are never touched on the default path.
+        self._env: dict[str, str] | None = env
         # Credential isolation: in paper mode this is always a public client.
         self._client = client if client is not None else make_exchange_client(cfg.exchange, self._env)
         # In-memory state (reset across runs; store is the source of truth for persistence)
@@ -261,12 +263,15 @@ class Executor:
             return
 
         # --- Profit target exit (net of fees) ---
+        # Formula derivation (both legs taker-fee, per-unit basis):
+        #   net_pnl / entry_price = exit_price*(1-t)/entry_price - (1+t) >= target
+        #   => exit_price = entry_price * (1 + target + t) / (1 - t)
+        # where t = taker rate.  This guarantees realized net PnL >= profit_target_pct
+        # after BOTH entry and exit taker fees are deducted.
         fee_table = self._cfg.fees.rates
-        entry_fee = fee(pos.entry_price * pos.qty, self._cfg.exchange, taker=True, table=fee_table)
-        exit_fee_per_unit = fee_table.get(self._cfg.exchange, {"taker": 0.001})["taker"]
-        # gross target = profit_target_pct + both fee rates
-        gross_target = exc_cfg.profit_target_pct + (entry_fee / (pos.entry_price * pos.qty)) + exit_fee_per_unit
-        target_price = pos.entry_price * (1.0 + gross_target)
+        taker = fee_table.get(self._cfg.exchange, {"taker": 0.001})["taker"]
+        target = exc_cfg.profit_target_pct
+        target_price = pos.entry_price * (1.0 + target + taker) / (1.0 - taker)
         if price >= target_price:
             logger.info("Executor: profit target exit for %s at %.6f (target %.6f)", symbol, price, target_price)
             self._paper_fill_exit(symbol, price, reason="profit_target")
