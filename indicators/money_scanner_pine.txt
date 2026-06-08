@@ -50,7 +50,7 @@ sym25 = input.symbol("BLOFIN:LDOUSDT.P",  "Symbol 25", group="Symbols")
 sym26 = input.symbol("BLOFIN:AAVEUSDT.P", "Symbol 26", group="Symbols")
 sym27 = input.symbol("BLOFIN:TONUSDT.P",  "Symbol 27", group="Symbols")
 sym28 = input.symbol("BLOFIN:JUPUSDT.P",  "Symbol 28", group="Symbols")
-sym29 = input.symbol("BLOFIN:RNDRUSDT.P", "Symbol 29", group="Symbols")
+sym29 = input.symbol("BLOFIN:RENDERUSDT.P", "Symbol 29", group="Symbols")
 sym30 = input.symbol("BLOFIN:ENAUSDT.P",  "Symbol 30", group="Symbols")
 
 // ---- Money Line slope for the requested symbol's context -------------------
